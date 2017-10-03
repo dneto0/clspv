@@ -51,11 +51,8 @@ bool SplatSelectConditionPass::runOnModule(Module &M) {
       for (Instruction &I : BB) {
         if (SelectInst *sel = dyn_cast<SelectInst>(&I)) {
           auto cond = sel->getCondition();
-          if (cond->getType()->isIntegerTy(1)) {
-            Type *valueTy = sel->getTrueValue()->getType();
-            if (valueTy->isVectorTy()) {
-              WorkList.push_back(sel);
-            }
+          if (cond->getType()->isIntegerTy(1) && sel->getType()->isVectorTy()) {
+            WorkList.push_back(sel);
           }
         }
       }
@@ -70,7 +67,7 @@ bool SplatSelectConditionPass::runOnModule(Module &M) {
   for (SelectInst *sel : WorkList) {
     Changed = true;
     auto cond = sel->getCondition();
-    auto numElems = sel->getTrueValue()->getType()->getVectorNumElements();
+    auto numElems = sel->getType()->getVectorNumElements();
     Builder.SetInsertPoint(sel);
     auto splat = Builder.CreateVectorSplat(numElems, cond);
     sel->setCondition(splat);

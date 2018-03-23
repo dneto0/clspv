@@ -1480,6 +1480,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(const DataLayout &DL) {
         auto GlobalTy = PTy->getPointerElementType()->getPointerTo(AddrSpace);
         if (0 < TypeMap.count(GlobalTy)) {
           TypeMap[PTy] = TypeMap[GlobalTy];
+          UseExistingOpTypePointer = true;
           break;
         }
       } else if (AddressSpace::Global == AddrSpace) {

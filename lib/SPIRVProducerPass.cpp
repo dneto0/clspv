@@ -85,6 +85,10 @@ llvm::cl::opt<bool> hack_undef(
 llvm::cl::opt<bool> show_ids("show-ids", llvm::cl::init(false),
                              llvm::cl::desc("Show SPIR-V IDs for functions"));
 
+llvm::cl::opt<bool> option_pod_ubo(
+    "pod-ubo", llvm::cl::init(false),
+    llvm::cl::desc("POD kernel arguments are in uniform buffers"));
+
 enum SPIRVOperandType {
   NUMBERID,
   LITERAL_INTEGER,
@@ -181,7 +185,7 @@ struct SPIRVProducerPass final : public ModulePass {
 
     if (0 == TypeMap.count(Ty)) {
       Ty->print(errs());
-      llvm_unreachable("Unhandled type!");
+      llvm_unreachable("\nUnhandled type!");
     }
 
     return TypeMap[Ty];
@@ -318,6 +322,8 @@ private:
   ValueMapType ValueMap;
   ValueMapType AllocatedValueMap;
   SPIRVInstructionList SPIRVInsts;
+  // Maps a kernel argument value to a global value.  OpenCL kernel arguments
+  // have to map to resources: buffers, samplers, images, or sampled images.
   ValueToValueMapTy ArgumentGVMap;
   ValueMapType ArgumentGVIDMap;
   EntryPointVecType EntryPointVec;

@@ -761,22 +761,15 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M) {
 
     for (const Argument &Arg : F.args()) {
       Type *ArgTy = Arg.getType();
-      Type *GVTy = nullptr;
 
-      // Check argument type whether it is pointer type or not. If it is
-      // pointer type, add its address space to new global variable for
-      // argument.
-      unsigned AddrSpace = AddressSpace::Global;
-      if (PointerType *ArgPTy = dyn_cast<PointerType>(ArgTy)) {
-        AddrSpace = ArgPTy->getAddressSpace();
-      }
+      // The pointee type of the module scope variable we will make.
+      Type *GVTy = nullptr;
 
       Type *TmpArgTy = ArgTy;
 
       // sampler_t and image types have pointer type of struct type with
-      // opaque
-      // type as field. Extract the struct type. It will be used by global
-      // variable for argument.
+      // opaque type as field. Extract the struct type. It will be used by
+      // global variable for argument.
       bool IsSamplerType = false;
       bool IsImageType = false;
       if (PointerType *TmpArgPTy = dyn_cast<PointerType>(TmpArgTy)) {
@@ -784,14 +777,12 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M) {
                 dyn_cast<StructType>(TmpArgPTy->getElementType())) {
           if (STy->isOpaque()) {
             if (STy->getName().equals("opencl.sampler_t")) {
-              AddrSpace = AddressSpace::UniformConstant;
               IsSamplerType = true;
               TmpArgTy = STy;
             } else if (STy->getName().equals("opencl.image2d_ro_t") ||
                        STy->getName().equals("opencl.image2d_wo_t") ||
                        STy->getName().equals("opencl.image3d_ro_t") ||
                        STy->getName().equals("opencl.image3d_wo_t")) {
-              AddrSpace = AddressSpace::UniformConstant;
               IsImageType = true;
               TmpArgTy = STy;
             } else {
@@ -801,13 +792,23 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M) {
         }
       }
 
+      // Determine the address space for the module-scope variable.
+      unsigned AddrSpace = AddressSpace::Global;
+      if (IsSamplerType || IsImageType) {
+        AddrSpace = AddressSpace::UniformConstant;
+      } else if (PointerType *ArgPTy = dyn_cast<PointerType>(ArgTy)) {
+        AddrSpace = ArgPTy->getAddressSpace();
+      } else if (option_pod_ubo) {
+        // Use a uniform buffer for POD arguments.
+        AddrSpace = AddressSpace::Uniform;
+      }
+
       // LLVM's pointer type is distinguished by address space but we need to
       // regard constant and global address space as same here. If pointer
       // type has constant address space, generate new pointer type
       // temporarily to check previous struct type for argument.
       if (PointerType *TmpArgPTy = dyn_cast<PointerType>(TmpArgTy)) {
-        AddrSpace = TmpArgPTy->getAddressSpace();
-        if (AddrSpace == AddressSpace::Constant) {
+        if (TmpArgPTy->getAddressSpace() == AddressSpace::Constant) {
           TmpArgTy = PointerType::get(TmpArgPTy->getElementType(),
                                       AddressSpace::Global);
         }
@@ -886,7 +887,8 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M) {
       // Generate pointer type of argument type for OpAccessChain of argument.
       if (!Arg.use_empty()) {
         if (!isa<PointerType>(ArgTy)) {
-          FindType(PointerType::get(ArgTy, AddrSpace));
+          auto ty = PointerType::get(ArgTy, AddrSpace);
+          FindType(ty);
         }
         HasArgUser = true;
       }
@@ -1402,6 +1404,8 @@ spv::StorageClass SPIRVProducerPass::GetStorageClass(unsigned AddrSpace) const {
     return spv::StorageClassWorkgroup;
   case AddressSpace::UniformConstant:
     return spv::StorageClassUniformConstant;
+  case AddressSpace::Uniform: // For POD kernel args.
+    return spv::StorageClassUniform;
   case AddressSpace::ModuleScopePrivate:
     return spv::StorageClassPrivate;
   }
@@ -3408,7 +3412,8 @@ void SPIRVProducerPass::GenerateInstForArg(Function &F) {
 
       uint32_t ResTyID = lookupType(ArgTy);
       if (!isa<PointerType>(ArgTy)) {
-        ResTyID = lookupType(PointerType::get(ArgTy, AddressSpace::Global));
+        auto AS = option_pod_ubo ? AddressSpace::Uniform : AddressSpace::Global;
+        ResTyID = lookupType(PointerType::get(ArgTy, AS));
       }
       SPIRVOperand *ResTyIDOp =
           new SPIRVOperand(SPIRVOperandType::NUMBERID, ResTyID);

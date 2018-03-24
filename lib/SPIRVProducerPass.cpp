@@ -2685,6 +2685,10 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
       }
     }
 
+    auto remap_arg_kind = [](StringRef argKind) {
+      return option_pod_ubo && argKind.equals("pod") ? "pod_ubo" : argKind;
+    };
+
     const auto *ArgMap = F.getMetadata("kernel_arg_map");
     // Emit descriptor map entries, if there was explicit metadata
     // attached.
@@ -2705,8 +2709,8 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
         descriptorMapOut << "kernel," << F.getName() << ",arg," << name
                          << ",argOrdinal," << old_index << ",descriptorSet,"
                          << DescriptorSetIdx << ",binding," << new_index
-                         << ",offset," << offset << ",argKind," << argKind
-                         << "\n";
+                         << ",offset," << offset << ",argKind,"
+                         << remap_arg_kind(argKind) << "\n";
       }
     }
 
@@ -2723,7 +2727,9 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
                          << ",argOrdinal," << BindingIdx << ",descriptorSet,"
                          << DescriptorSetIdx << ",binding," << BindingIdx
                          << ",offset,0,argKind,"
-                         << clspv::GetArgKindForType(Arg.getType()) << "\n";
+                         << remap_arg_kind(
+                                clspv::GetArgKindForType(Arg.getType()))
+                         << "\n";
       }
 
       if (GVarWithEmittedBindingInfo.count(NewGV)) {

@@ -25,6 +25,7 @@
 // encode the mapping from old kernel argument to new kernel argument.
 
 #include <cassert>
+#include <cstring>
 
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/DerivedTypes.h>
@@ -93,8 +94,10 @@ bool ClusterPodKernelArgumentsPass::runOnModule(Module &M) {
       std::string name;
       // 0-based argument index in the old kernel function.
       unsigned old_index;
-      // 0-based argument index in the new kernel function.
-      unsigned new_index;
+      // 0-based argument index in the new kernel function, if this argument
+      // occupies a descriptor binding.  Otherwise (as is the case for
+      // pointer-to-local), this is -1.
+      int maybe_binding;
       // Offset of the argument value within the new kernel argument.
       // This is always zero for non-POD arguments.  For a POD argument,
       // this is the byte offset within the POD arguments struct.
@@ -112,13 +115,18 @@ bool ClusterPodKernelArgumentsPass::runOnModule(Module &M) {
     SmallVector<Type *, 8> PodArgTys;
     SmallVector<ArgMapping, 8> RemapInfo;
     unsigned arg_index = 0;
+    int next_binding = 0;
     for (Argument &Arg : F->args()) {
       Type *ArgTy = Arg.getType();
       if (isa<PointerType>(ArgTy)) {
         PtrArgTys.push_back(ArgTy);
-        RemapInfo.push_back({std::string(Arg.getName()), arg_index,
-                             unsigned(RemapInfo.size()), 0u,
-                             clspv::GetArgKindForType(ArgTy)});
+        auto kind = clspv::GetArgKindForType(ArgTy);
+        int maybe_binding = -1;
+        if (std::strcmp("local", kind)) {
+          maybe_binding = next_binding++;
+        }
+        RemapInfo.push_back(
+            {std::string(Arg.getName()), arg_index, maybe_binding, 0u, kind});
       } else {
         PodArgTys.push_back(ArgTy);
       }
@@ -138,12 +146,11 @@ bool ClusterPodKernelArgumentsPass::runOnModule(Module &M) {
           M.getDataLayout().getStructLayout(PodArgsStructTy);
       arg_index = 0;
       int pod_index = 0;
-      const unsigned num_pointer_args = unsigned(RemapInfo.size());
       for (Argument &Arg : F->args()) {
         Type *ArgTy = Arg.getType();
         if (!isa<PointerType>(ArgTy)) {
           RemapInfo.push_back(
-              {std::string(Arg.getName()), arg_index, num_pointer_args,
+              {std::string(Arg.getName()), arg_index, next_binding,
                unsigned(StructLayout->getElementOffset(pod_index++)),
                clspv::GetArgKindForType(ArgTy)});
         }
@@ -198,7 +205,7 @@ bool ClusterPodKernelArgumentsPass::runOnModule(Module &M) {
         auto *old_index_md =
             ConstantAsMetadata::get(Builder.getInt32(arg_mapping.old_index));
         auto *new_index_md =
-            ConstantAsMetadata::get(Builder.getInt32(arg_mapping.new_index));
+            ConstantAsMetadata::get(Builder.getInt32(arg_mapping.maybe_binding));
         auto *offset =
             ConstantAsMetadata::get(Builder.getInt32(arg_mapping.offset));
         auto *argtype_md = MDString::get(Context, arg_mapping.arg_kind);

@@ -21,11 +21,13 @@ namespace clspv {
 
 // Maps an LLVM type for a kernel argument to an argument
 // kind suitable for a descriptor map.  The result is one of:
-//   buffer
-//   pod
-//   ro_image
-//   wo_image
-//   sampler
+//   buffer   - storage buffer
+//   local    - array in Workgroup storage, number of elements given by
+//              a specialization constant
+//   pod      - plain-old-data
+//   ro_image - read-only image
+//   wo_image - write-only image
+//   sampler  - sampler
 const char *GetArgKindForType(llvm::Type *type);
 
 } // namespace clspv

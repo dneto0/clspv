@@ -2762,142 +2762,169 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
             dyn_cast<MDString>(arg_node->getOperand(0))->getString();
         const auto old_index =
             dyn_extract<ConstantInt>(arg_node->getOperand(1))->getZExtValue();
-        const auto new_index =
-            dyn_extract<ConstantInt>(arg_node->getOperand(2))->getZExtValue();
+        const auto binding =
+            dyn_extract<ConstantInt>(arg_node->getOperand(2))->getSExtValue();
         const auto offset =
             dyn_extract<ConstantInt>(arg_node->getOperand(3))->getZExtValue();
-        const auto argKind =
-            dyn_cast<MDString>(arg_node->getOperand(4))->getString();
-        descriptorMapOut << "kernel," << F.getName() << ",arg," << name
-                         << ",argOrdinal," << old_index << ",descriptorSet,"
-                         << DescriptorSetIdx << ",binding," << new_index
-                         << ",offset," << offset << ",argKind,"
-                         << remap_arg_kind(argKind) << "\n";
+        const auto argKind = remap_arg_kind(
+            dyn_cast<MDString>(arg_node->getOperand(4))->getString());
+        if (binding < 0) {
+          descriptorMapOut << "kernel," << F.getName() << ",arg," << name
+                           << ",argOrdinal," << old_index << ",argKind,"
+                           << argKind << "\n";
+          // TODO(dneto): specialization constant for this local.
+        } else {
+          descriptorMapOut << "kernel," << F.getName() << ",arg," << name
+                           << ",argOrdinal," << old_index << ",descriptorSet,"
+                           << DescriptorSetIdx << ",binding," << binding
+                           << ",offset," << offset << ",argKind," << argKind
+                           << "\n";
+        }
       }
     }
 
     uint32_t BindingIdx = 0;
+    uint32_t arg_index = 0;
     for (auto &Arg : F.args()) {
       Value *NewGV = ArgGVMap[&Arg];
       VMap[&Arg] = VMap[NewGV];
       ArgGVIDMap[&Arg] = VMap[&Arg];
 
+      auto kind = remap_arg_kind(clspv::GetArgKindForType(Arg.getType()));
+      // Always use a binding, unless it's pointer-to-local.
+      const bool uses_binding = kind != "local";
+
       // Emit a descriptor map entry for this arg, in case there was no explicit
       // kernel arg mapping metadata.
       if (!ArgMap) {
-        descriptorMapOut << "kernel," << F.getName() << ",arg," << Arg.getName()
-                         << ",argOrdinal," << BindingIdx << ",descriptorSet,"
-                         << DescriptorSetIdx << ",binding," << BindingIdx
-                         << ",offset,0,argKind,"
-                         << remap_arg_kind(
-                                clspv::GetArgKindForType(Arg.getType()))
-                         << "\n";
+        if (uses_binding) {
+          descriptorMapOut << "kernel," << F.getName() << ",arg,"
+                           << Arg.getName() << ",argOrdinal," << arg_index
+                           << ",descriptorSet," << DescriptorSetIdx
+                           << ",binding," << BindingIdx << ",offset,0,argKind,"
+                           << kind << "\n";
+        } else {
+          descriptorMapOut << "kernel," << F.getName() << ",arg,"
+                           << Arg.getName() << ",argOrdinal," << arg_index
+                           << ",argKind," << kind << "\n";
+          // TODO(dneto): specialization constant for this local.
+        }
       }
 
-      if (GVarWithEmittedBindingInfo.count(NewGV)) {
-        BindingIdx++;
-        continue;
-      }
-      GVarWithEmittedBindingInfo.insert(NewGV);
+      if (0 == GVarWithEmittedBindingInfo.count(NewGV)) {
+        // Generate a new global variable for this argument.
+        GVarWithEmittedBindingInfo.insert(NewGV);
 
-      // Ops[0] = Target ID
-      // Ops[1] = Decoration (DescriptorSet)
-      // Ops[2] = LiteralNumber according to Decoration
-      SPIRVOperandList Ops;
+        SPIRVOperandList Ops;
+        SPIRVOperand *ArgIDOp = nullptr;
 
-      SPIRVOperand *ArgIDOp =
-          new SPIRVOperand(SPIRVOperandType::NUMBERID, VMap[&Arg]);
-      Ops.push_back(ArgIDOp);
+        if (uses_binding) {
+          // Ops[0] = Target ID
+          // Ops[1] = Decoration (DescriptorSet)
+          // Ops[2] = LiteralNumber according to Decoration
 
-      spv::Decoration Deco = spv::DecorationDescriptorSet;
-      SPIRVOperand *DecoOp = new SPIRVOperand(SPIRVOperandType::NUMBERID, Deco);
-      Ops.push_back(DecoOp);
+          ArgIDOp = new SPIRVOperand(SPIRVOperandType::NUMBERID, VMap[&Arg]);
+          Ops.push_back(ArgIDOp);
 
-      std::vector<uint32_t> LiteralNum;
-      LiteralNum.push_back(DescriptorSetIdx);
-      SPIRVOperand *DescSet =
-          new SPIRVOperand(SPIRVOperandType::LITERAL_INTEGER, LiteralNum);
-      Ops.push_back(DescSet);
+          spv::Decoration Deco = spv::DecorationDescriptorSet;
+          SPIRVOperand *DecoOp =
+              new SPIRVOperand(SPIRVOperandType::NUMBERID, Deco);
+          Ops.push_back(DecoOp);
 
-      SPIRVInstruction *DescDecoInst =
-          new SPIRVInstruction(4, spv::OpDecorate, 0 /* No id */, Ops);
-      SPIRVInstList.insert(DecoInsertPoint, DescDecoInst);
+          std::vector<uint32_t> LiteralNum;
+          LiteralNum.push_back(DescriptorSetIdx);
+          SPIRVOperand *DescSet =
+              new SPIRVOperand(SPIRVOperandType::LITERAL_INTEGER, LiteralNum);
+          Ops.push_back(DescSet);
 
-      // Ops[0] = Target ID
-      // Ops[1] = Decoration (Binding)
-      // Ops[2] = LiteralNumber according to Decoration
-      Ops.clear();
+          SPIRVInstruction *DescDecoInst =
+              new SPIRVInstruction(4, spv::OpDecorate, 0 /* No id */, Ops);
+          SPIRVInstList.insert(DecoInsertPoint, DescDecoInst);
 
-      Ops.push_back(ArgIDOp);
+          // Ops[0] = Target ID
+          // Ops[1] = Decoration (Binding)
+          // Ops[2] = LiteralNumber according to Decoration
+          Ops.clear();
 
-      Deco = spv::DecorationBinding;
-      DecoOp = new SPIRVOperand(SPIRVOperandType::NUMBERID, Deco);
-      Ops.push_back(DecoOp);
+          Ops.push_back(ArgIDOp);
 
-      LiteralNum.clear();
-      LiteralNum.push_back(BindingIdx++);
-      SPIRVOperand *Binding =
-          new SPIRVOperand(SPIRVOperandType::LITERAL_INTEGER, LiteralNum);
-      Ops.push_back(Binding);
+          Deco = spv::DecorationBinding;
+          DecoOp = new SPIRVOperand(SPIRVOperandType::NUMBERID, Deco);
+          Ops.push_back(DecoOp);
 
-      SPIRVInstruction *BindDecoInst =
-          new SPIRVInstruction(4, spv::OpDecorate, 0 /* No id */, Ops);
-      SPIRVInstList.insert(DecoInsertPoint, BindDecoInst);
+          LiteralNum.clear();
+          LiteralNum.push_back(BindingIdx);
+          SPIRVOperand *Binding =
+              new SPIRVOperand(SPIRVOperandType::LITERAL_INTEGER, LiteralNum);
+          Ops.push_back(Binding);
 
-      // Handle image type argument.
-      bool HasReadOnlyImageType = false;
-      bool HasWriteOnlyImageType = false;
-      if (PointerType *ArgPTy = dyn_cast<PointerType>(Arg.getType())) {
-        if (StructType *STy = dyn_cast<StructType>(ArgPTy->getElementType())) {
-          if (STy->isOpaque()) {
-            if (STy->getName().equals("opencl.image2d_ro_t") ||
-                STy->getName().equals("opencl.image3d_ro_t")) {
-              HasReadOnlyImageType = true;
-            } else if (STy->getName().equals("opencl.image2d_wo_t") ||
-                       STy->getName().equals("opencl.image3d_wo_t")) {
-              HasWriteOnlyImageType = true;
+          SPIRVInstruction *BindDecoInst =
+              new SPIRVInstruction(4, spv::OpDecorate, 0 /* No id */, Ops);
+          SPIRVInstList.insert(DecoInsertPoint, BindDecoInst);
+        }
+
+        // Handle image type argument.
+        bool HasReadOnlyImageType = false;
+        bool HasWriteOnlyImageType = false;
+        if (PointerType *ArgPTy = dyn_cast<PointerType>(Arg.getType())) {
+          if (StructType *STy =
+                  dyn_cast<StructType>(ArgPTy->getElementType())) {
+            if (STy->isOpaque()) {
+              if (STy->getName().equals("opencl.image2d_ro_t") ||
+                  STy->getName().equals("opencl.image3d_ro_t")) {
+                HasReadOnlyImageType = true;
+              } else if (STy->getName().equals("opencl.image2d_wo_t") ||
+                         STy->getName().equals("opencl.image3d_wo_t")) {
+                HasWriteOnlyImageType = true;
+              }
             }
           }
         }
-      }
 
-      if (HasReadOnlyImageType || HasWriteOnlyImageType) {
-        // Ops[0] = Target ID
-        // Ops[1] = Decoration (NonReadable or NonWritable)
-        Ops.clear();
+        if (HasReadOnlyImageType || HasWriteOnlyImageType) {
+          // Ops[0] = Target ID
+          // Ops[1] = Decoration (NonReadable or NonWritable)
+          Ops.clear();
 
-        ArgIDOp = new SPIRVOperand(SPIRVOperandType::NUMBERID, VMap[&Arg]);
-        Ops.push_back(ArgIDOp);
+          auto *ArgIDOp =
+              new SPIRVOperand(SPIRVOperandType::NUMBERID, VMap[&Arg]);
+          Ops.push_back(ArgIDOp);
 
-        Deco = spv::DecorationNonReadable;
-        if (HasReadOnlyImageType) {
-          Deco = spv::DecorationNonWritable;
+          auto Deco = spv::DecorationNonReadable;
+          if (HasReadOnlyImageType) {
+            Deco = spv::DecorationNonWritable;
+          }
+          auto *DecoOp = new SPIRVOperand(SPIRVOperandType::NUMBERID, Deco);
+          Ops.push_back(DecoOp);
+
+          auto *DescDecoInst =
+              new SPIRVInstruction(3, spv::OpDecorate, 0 /* No id */, Ops);
+          SPIRVInstList.insert(DecoInsertPoint, DescDecoInst);
         }
-        DecoOp = new SPIRVOperand(SPIRVOperandType::NUMBERID, Deco);
-        Ops.push_back(DecoOp);
 
-        DescDecoInst =
-            new SPIRVInstruction(3, spv::OpDecorate, 0 /* No id */, Ops);
-        SPIRVInstList.insert(DecoInsertPoint, DescDecoInst);
+        // Handle const address space.
+        if (NewGV->getType()->getPointerAddressSpace() ==
+            AddressSpace::Constant) {
+          // Ops[0] = Target ID
+          // Ops[1] = Decoration (NonWriteable)
+          Ops.clear();
+
+          assert(ArgIDOp);
+          Ops.push_back(ArgIDOp);
+
+          auto Deco = spv::DecorationNonWritable;
+          auto *DecoOp = new SPIRVOperand(SPIRVOperandType::NUMBERID, Deco);
+          Ops.push_back(DecoOp);
+
+          auto *BindDecoInst =
+              new SPIRVInstruction(3, spv::OpDecorate, 0 /* No id */, Ops);
+          SPIRVInstList.insert(DecoInsertPoint, BindDecoInst);
+        }
       }
-
-      // Handle const address space.
-      if (NewGV->getType()->getPointerAddressSpace() ==
-          AddressSpace::Constant) {
-        // Ops[0] = Target ID
-        // Ops[1] = Decoration (NonWriteable)
-        Ops.clear();
-
-        Ops.push_back(ArgIDOp);
-
-        Deco = spv::DecorationNonWritable;
-        DecoOp = new SPIRVOperand(SPIRVOperandType::NUMBERID, Deco);
-        Ops.push_back(DecoOp);
-
-        BindDecoInst =
-            new SPIRVInstruction(3, spv::OpDecorate, 0 /* No id */, Ops);
-        SPIRVInstList.insert(DecoInsertPoint, BindDecoInst);
+      if (uses_binding) {
+        BindingIdx++;
       }
+      arg_index++;
     }
   }
 

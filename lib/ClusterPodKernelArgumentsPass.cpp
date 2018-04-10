@@ -127,7 +127,7 @@ bool ClusterPodKernelArgumentsPass::runOnModule(Module &M) {
         PtrArgTys.push_back(ArgTy);
         auto kind = clspv::GetArgKindForType(ArgTy);
         int spec_id = -1;
-        if (std::strcmp("local", kind)) {
+        if (0 == std::strcmp("local", kind)) {
           spec_id = arg_spec_id_map[&Arg];
           assert(spec_id > 0);
         }

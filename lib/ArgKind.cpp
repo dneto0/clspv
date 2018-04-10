@@ -83,6 +83,7 @@ ArgIdMapType AllocateArgSpecIds(Module &M) {
     for (const auto &Arg : F.args()) {
       if (IsLocalPtr(Arg.getType())) {
         // This relies on the fact that an arg map will exist for kj
+        errs() << "Arg " << Arg << " spec_id " << next_spec_id << "\n";
         result[&Arg] = next_spec_id++;
       }
     }

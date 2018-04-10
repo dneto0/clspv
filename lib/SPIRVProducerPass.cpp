@@ -402,9 +402,14 @@ private:
 
   // The next descriptor set index to use.
   uint32_t NextDescriptorSetIndex;
+
+  // A mapping from pointer-to-local argument to a specialization constant ID
+  // for that argument's array size.  This is generated from AllocatArgSpecIds.
+  ArgIdMapType ArgSpecIdMap;
 };
 
 char SPIRVProducerPass::ID;
+
 }
 
 namespace clspv {
@@ -419,6 +424,8 @@ createSPIRVProducerPass(raw_pwrite_stream &out, raw_ostream &descriptor_map_out,
 
 bool SPIRVProducerPass::runOnModule(Module &module) {
   binaryOut = outputCInitList ? &binaryTempOut : &out;
+
+  ArgSpecIdMap = AllocateArgSpecIds(module);
 
   // SPIR-V always begins with its header information
   outputHeader();
@@ -460,6 +467,13 @@ bool SPIRVProducerPass::runOnModule(Module &module) {
     if (AddressSpace::Input == GV.getType()->getPointerAddressSpace()) {
       getEntryPointInterfacesVec().insert(&GV);
     }
+  }
+
+  // Find types related to pointer-to-local arguments.
+  for (auto& arg_spec_id_pair : ArgSpecIdMap) {
+    const Argument* arg = arg_spec_id_pair.first;
+    FindType(arg->getType());
+    FindType(arg->getType()->getPointerElementType());
   }
 
   // If there are extended instructions, generate OpExtInstImport.
@@ -617,8 +631,6 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
 
   // Map for avoiding to generate struct type with same fields.
   DenseMap<Type *, Type *> ArgTyMap;
-
-  auto arg_spec_id_map = AllocateArgSpecIds(M);
 
   // These function calls need a <2 x i32> as an intermediate result but not
   // the final result.
@@ -893,7 +905,7 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
         GVTy = TmpArgTy;
       } else if (IsPointerToLocal) {
         assert(ArgTy == TmpArgTy);
-        auto spec_id = arg_spec_id_map[&Arg];
+        auto spec_id = ArgSpecIdMap[&Arg];
         assert(spec_id > 0);
         LocalArgMap[&Arg] =
             LocalArgInfo{nextID,     ArgTy->getPointerElementType(),
@@ -2833,8 +2845,6 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
 
   FunctionType *FTy = F.getFunctionType();
 
-  auto arg_spec_id_map = AllocateArgSpecIds(*(F.getParent()));
-
   //
   // Generate OpVariable and OpDecorate for kernel function with arguments.
   //
@@ -2861,6 +2871,9 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
     };
 
     const auto *ArgMap = F.getMetadata("kernel_arg_map");
+    for (auto& a : F.args()) {
+      errs() << "arg " << a << "\n";
+    }
     // Emit descriptor map entries, if there was explicit metadata
     // attached.
     if (ArgMap) {
@@ -2880,14 +2893,14 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
         const auto spec_id =
             dyn_extract<ConstantInt>(arg_node->getOperand(5))->getSExtValue();
         if (spec_id > 0) {
-          descriptorMapOut << "kernel," << F.getName() << ",arg," << name
-                           << ",argOrdinal," << old_index << ",argKind,"
-                           << argKind << ",arrayElemSize,"
-                           << DL.getTypeAllocSize(F.getOperand(new_index)
-                                                      ->getType()
-                                                      ->getPointerElementType())
-                           << ",arraySizeSpecId," << spec_id << "\n";
-          // TODO(dneto): specialization constant for this local.
+          FunctionType *fTy =
+              cast<FunctionType>(F.getType()->getPointerElementType());
+          descriptorMapOut
+              << "kernel," << F.getName() << ",arg," << name << ",argOrdinal,"
+              << old_index << ",argKind," << argKind << ",arrayElemSize,"
+              << DL.getTypeAllocSize(
+                     fTy->getParamType(new_index)->getPointerElementType())
+              << ",arraySizeSpecId," << spec_id << "\n";
         } else {
           descriptorMapOut << "kernel," << F.getName() << ",arg," << name
                            << ",argOrdinal," << old_index << ",descriptorSet,"
@@ -2920,7 +2933,7 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
                            << ",argKind," << argKind << ",arrayElemSize,"
                            << DL.getTypeAllocSize(
                                   Arg.getType()->getPointerElementType())
-                           << ",arraySizeSpecId," << arg_spec_id_map[&Arg]
+                           << ",arraySizeSpecId," << ArgSpecIdMap[&Arg]
                            << "\n";
         }
       }

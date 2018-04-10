@@ -67,4 +67,9 @@ const char *GetArgKindForType(Type *type) {
   return nullptr;
 }
 
+bool IsLocalPtr(llvm::Type *type) {
+  return type->isPointerTy() &&
+         type->getPointerAddressSpace() == clspv::AddressSpace::Local;
+}
+
 } // namespace clspv

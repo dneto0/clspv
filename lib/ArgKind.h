@@ -30,6 +30,9 @@ namespace clspv {
 //   sampler  - sampler
 const char *GetArgKindForType(llvm::Type *type);
 
+// Returns true if the given type is a pointer-to-local type.
+bool IsLocalPtr(llvm::Type* type);
+
 } // namespace clspv
 
 #endif

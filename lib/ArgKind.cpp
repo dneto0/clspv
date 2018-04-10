@@ -72,4 +72,23 @@ bool IsLocalPtr(llvm::Type *type) {
          type->getPointerAddressSpace() == clspv::AddressSpace::Local;
 }
 
+ArgIdMapType AllocateArgSpecIds(Module &M) {
+  ArgIdMapType result;
+
+  int next_spec_id = 3; // Reserve space for workgroup size spec ids.
+  for (Function &F : M) {
+    if (F.isDeclaration() || F.getCallingConv() != CallingConv::SPIR_KERNEL) {
+      continue;
+    }
+    for (const auto &Arg : F.args()) {
+      if (IsLocalPtr(Arg.getType())) {
+        // This relies on the fact that an arg map will exist for kj
+        result[&Arg] = next_spec_id++;
+      }
+    }
+  }
+
+  return result;
+}
+
 } // namespace clspv

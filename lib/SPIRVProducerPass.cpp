@@ -395,7 +395,7 @@ private:
     // The ID of the pointer to the first element of the array.
     uint32_t first_elem_ptr_id;
     // The specialization constant ID of the array size.
-    uint32_t spec_id;
+    int spec_id;
   };
   // A mapping from a pointer-to-local argument value to a LocalArgInfo value.
   DenseMap<const Argument*, LocalArgInfo> LocalArgMap;
@@ -618,6 +618,8 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
   // Map for avoiding to generate struct type with same fields.
   DenseMap<Type *, Type *> ArgTyMap;
 
+  auto arg_spec_id_map = AllocateArgSpecIds(M);
+
   // These function calls need a <2 x i32> as an intermediate result but not
   // the final result.
   std::unordered_set<std::string> NeedsIVec2{
@@ -719,8 +721,6 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
       }
     }
   }
-
-  // Collect pointer-to-local
 
   bool HasWorkGroupBuiltin = false;
   for (GlobalVariable &GV : M.globals()) {
@@ -893,8 +893,12 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
         GVTy = TmpArgTy;
       } else if (IsPointerToLocal) {
         assert(ArgTy == TmpArgTy);
-        LocalArgMap[&Arg] = LocalArgInfo{nextID, ArgTy->getPointerElementType(),
-                                         nextID + 1, nextID + 2, nextID + 3, nextSpecID++};
+        auto spec_id = arg_spec_id_map[&Arg];
+        assert(spec_id > 0);
+        LocalArgMap[&Arg] =
+            LocalArgInfo{nextID,     ArgTy->getPointerElementType(),
+                         nextID + 1, nextID + 2,
+                         nextID + 3, spec_id};
         LocalArgs.push_back(&Arg);
         nextID += 4;
       } else if (ArgTyMap.count(TmpArgTy)) {
@@ -2818,6 +2822,7 @@ void SPIRVProducerPass::GenerateWorkgroupVars() {
 }
 
 void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
+  const DataLayout &DL = F.getParent()->getDataLayout();
   SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
   ValueMapType &VMap = getValueMap();
   EntryPointVecType &EntryPoints = getEntryPointVec();
@@ -2827,6 +2832,8 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
   auto &GlobalConstArgSet = getGlobalConstArgSet();
 
   FunctionType *FTy = F.getFunctionType();
+
+  auto arg_spec_id_map = AllocateArgSpecIds(*(F.getParent()));
 
   //
   // Generate OpVariable and OpDecorate for kernel function with arguments.
@@ -2859,26 +2866,32 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
     if (ArgMap) {
       for (const auto &arg : ArgMap->operands()) {
         const MDNode *arg_node = dyn_cast<MDNode>(arg.get());
-        assert(arg_node->getNumOperands() == 5);
+        assert(arg_node->getNumOperands() == 6);
         const auto name =
             dyn_cast<MDString>(arg_node->getOperand(0))->getString();
         const auto old_index =
             dyn_extract<ConstantInt>(arg_node->getOperand(1))->getZExtValue();
-        const auto binding =
-            dyn_extract<ConstantInt>(arg_node->getOperand(2))->getSExtValue();
+        const auto new_index =
+            dyn_extract<ConstantInt>(arg_node->getOperand(2))->getZExtValue();
         const auto offset =
             dyn_extract<ConstantInt>(arg_node->getOperand(3))->getZExtValue();
         const auto argKind = remap_arg_kind(
             dyn_cast<MDString>(arg_node->getOperand(4))->getString());
-        if (binding < 0) {
+        const auto spec_id =
+            dyn_extract<ConstantInt>(arg_node->getOperand(5))->getSExtValue();
+        if (spec_id > 0) {
           descriptorMapOut << "kernel," << F.getName() << ",arg," << name
                            << ",argOrdinal," << old_index << ",argKind,"
-                           << argKind << "\n";
+                           << argKind << ",arrayElemSize,"
+                           << DL.getTypeAllocSize(F.getOperand(new_index)
+                                                      ->getType()
+                                                      ->getPointerElementType())
+                           << ",arraySizeSpecId," << spec_id << "\n";
           // TODO(dneto): specialization constant for this local.
         } else {
           descriptorMapOut << "kernel," << F.getName() << ",arg," << name
                            << ",argOrdinal," << old_index << ",descriptorSet,"
-                           << DescriptorSetIdx << ",binding," << binding
+                           << DescriptorSetIdx << ",binding," << new_index
                            << ",offset," << offset << ",argKind," << argKind
                            << "\n";
         }
@@ -2893,19 +2906,22 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
 
       // Emit a descriptor map entry for this arg, in case there was no explicit
       // kernel arg mapping metadata.
-      auto kind = remap_arg_kind(clspv::GetArgKindForType(Arg.getType()));
+      auto argKind = remap_arg_kind(clspv::GetArgKindForType(Arg.getType()));
       if (!ArgMap) {
         if (uses_binding) {
           descriptorMapOut << "kernel," << F.getName() << ",arg,"
                            << Arg.getName() << ",argOrdinal," << arg_index
                            << ",descriptorSet," << DescriptorSetIdx
                            << ",binding," << BindingIdx << ",offset,0,argKind,"
-                           << kind << "\n";
+                           << argKind << "\n";
         } else {
           descriptorMapOut << "kernel," << F.getName() << ",arg,"
                            << Arg.getName() << ",argOrdinal," << arg_index
-                           << ",argKind," << kind << "\n";
-          // TODO(dneto): specialization constant for this local.
+                           << ",argKind," << argKind << ",arrayElemSize,"
+                           << DL.getTypeAllocSize(
+                                  Arg.getType()->getPointerElementType())
+                           << ",arraySizeSpecId," << arg_spec_id_map[&Arg]
+                           << "\n";
         }
       }
 

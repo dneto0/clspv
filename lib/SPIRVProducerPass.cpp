@@ -2882,6 +2882,11 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
     // Emit descriptor map entries, if there was explicit metadata
     // attached.
     if (ArgMap) {
+      // The binding number is the new argument index minus the number
+      // pointer-to-local arguments.  Do this adjustment here rather than
+      // adding yet another data member to the metadata for each argument.
+      int num_ptr_local = 0;
+
       for (const auto &arg : ArgMap->operands()) {
         const MDNode *arg_node = dyn_cast<MDNode>(arg.get());
         assert(arg_node->getNumOperands() == 6);
@@ -2898,6 +2903,7 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
         const auto spec_id =
             dyn_extract<ConstantInt>(arg_node->getOperand(5))->getSExtValue();
         if (spec_id > 0) {
+          num_ptr_local++;
           FunctionType *fTy =
               cast<FunctionType>(F.getType()->getPointerElementType());
           descriptorMapOut
@@ -2909,9 +2915,9 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
         } else {
           descriptorMapOut << "kernel," << F.getName() << ",arg," << name
                            << ",argOrdinal," << old_index << ",descriptorSet,"
-                           << DescriptorSetIdx << ",binding," << new_index
-                           << ",offset," << offset << ",argKind," << argKind
-                           << "\n";
+                           << DescriptorSetIdx << ",binding,"
+                           << (new_index - num_ptr_local) << ",offset,"
+                           << offset << ",argKind," << argKind << "\n";
         }
       }
     }

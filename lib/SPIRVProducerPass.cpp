@@ -2871,9 +2871,6 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
     };
 
     const auto *ArgMap = F.getMetadata("kernel_arg_map");
-    for (auto& a : F.args()) {
-      errs() << "arg " << a << "\n";
-    }
     // Emit descriptor map entries, if there was explicit metadata
     // attached.
     if (ArgMap) {

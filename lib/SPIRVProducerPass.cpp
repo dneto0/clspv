@@ -392,6 +392,8 @@ private:
     uint32_t array_size_id;
     // The ID of the array type.
     uint32_t array_type_id;
+    // The ID of the pointer to the array type.
+    uint32_t ptr_array_type_id;
     // The ID of the pointer to the first element of the array.
     uint32_t first_elem_ptr_id;
     // The specialization constant ID of the array size.
@@ -910,9 +912,10 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
         LocalArgMap[&Arg] =
             LocalArgInfo{nextID,     ArgTy->getPointerElementType(),
                          nextID + 1, nextID + 2,
-                         nextID + 3, spec_id};
+                         nextID + 3, nextID + 4,
+                         spec_id};
         LocalArgs.push_back(&Arg);
-        nextID += 4;
+        nextID += 5;
       } else if (ArgTyMap.count(TmpArgTy)) {
         // If there are arguments handled previously, use its type.
         GVTy = ArgTyMap[TmpArgTy];
@@ -2135,7 +2138,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
     SPIRVInstList.push_back(Inst);
   }
 
-  // Generate array types for pointer-to-local arguments.
+  // Generate types for pointer-to-local arguments.
   for (auto* arg : LocalArgs) {
 
     LocalArgInfo& arg_info = LocalArgMap[arg];
@@ -2156,6 +2159,11 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
 
     SPIRVInstList.push_back(
         new SPIRVInstruction(4, spv::OpTypeArray, arg_info.array_type_id, Ops));
+
+    Ops.clear();
+    Ops << MkNum(spv::StorageClassWorkgroup) << MkId(arg_info.array_type_id);
+    SPIRVInstList.push_back(
+        new SPIRVInstruction(4, spv::OpTypePointer, arg_info.ptr_array_type_id, Ops));
   }
 }
 
@@ -2826,7 +2834,7 @@ void SPIRVProducerPass::GenerateWorkgroupVars() {
     // GIDOps[0] : Result Type ID
     // GIDOps[1] : Storage Class
     SPIRVOperandList Ops;
-    Ops << MkId(info.array_type_id) << MkNum(spv::StorageClassWorkgroup);
+    Ops << MkId(info.ptr_array_type_id) << MkNum(spv::StorageClassWorkgroup);
 
     SPIRVInstList.push_back(
         new SPIRVInstruction(4, spv::OpVariable, info.variable_id, Ops));
@@ -2897,7 +2905,7 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
               << old_index << ",argKind," << argKind << ",arrayElemSize,"
               << DL.getTypeAllocSize(
                      fTy->getParamType(new_index)->getPointerElementType())
-              << ",arraySizeSpecId," << spec_id << "\n";
+              << ",arrayNumElemSpecId," << spec_id << "\n";
         } else {
           descriptorMapOut << "kernel," << F.getName() << ",arg," << name
                            << ",argOrdinal," << old_index << ",descriptorSet,"
@@ -2930,7 +2938,7 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
                            << ",argKind," << argKind << ",arrayElemSize,"
                            << DL.getTypeAllocSize(
                                   Arg.getType()->getPointerElementType())
-                           << ",arraySizeSpecId," << ArgSpecIdMap[&Arg]
+                           << ",arrayNumElemSpecId," << ArgSpecIdMap[&Arg]
                            << "\n";
         }
       }

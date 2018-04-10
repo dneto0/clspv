@@ -3504,6 +3504,21 @@ void SPIRVProducerPass::GenerateInstForArg(Function &F) {
       continue;
     }
 
+    Type *ArgTy = Arg.getType();
+    if (IsLocalPtr(ArgTy)) {
+      // Generate OpAccessChain to point to the first element of the array.
+      const LocalArgInfo &info = LocalArgMap[&Arg];
+      VMap[&Arg] = info.first_elem_ptr_id;
+
+      SPIRVOperandList Ops;
+      uint32_t zeroId = VMap[ConstantInt::get(Type::getInt32Ty(Context), 0)];
+      Ops << MkId(lookupType(ArgTy)) << MkId(info.variable_id) << MkId(zeroId);
+      SPIRVInstList.push_back(new SPIRVInstruction(
+          5, spv::OpAccessChain, info.first_elem_ptr_id, Ops));
+
+      continue;
+    }
+
     // Check the type of users of arguments.
     bool HasOnlyGEPUse = true;
     for (auto *U : Arg.users()) {
@@ -3512,8 +3527,6 @@ void SPIRVProducerPass::GenerateInstForArg(Function &F) {
         break;
       }
     }
-
-    Type *ArgTy = Arg.getType();
 
     if (PointerType *PTy = dyn_cast<PointerType>(ArgTy)) {
       if (StructType *STy = dyn_cast<StructType>(PTy->getElementType())) {

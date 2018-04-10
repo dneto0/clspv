@@ -156,7 +156,7 @@ bool ClusterPodKernelArgumentsPass::runOnModule(Module &M) {
         Type *ArgTy = Arg.getType();
         if (!isa<PointerType>(ArgTy)) {
           RemapInfo.push_back(
-              {std::string(Arg.getName()), arg_index, new_index++,
+              {std::string(Arg.getName()), arg_index, new_index,
                unsigned(StructLayout->getElementOffset(pod_index++)),
                clspv::GetArgKindForType(ArgTy), -1});
         }

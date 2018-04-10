@@ -94,6 +94,38 @@ private:
   SmallVector<uint32_t, 4> LiteralNum;
 };
 
+class SPIRVOperandList {
+public:
+  SPIRVOperandList() {}
+  SPIRVOperandList(const SPIRVOperandList& other) = delete;
+  SPIRVOperandList(SPIRVOperandList&& other) {
+    contents_ = std::move(other.contents_);
+    other.contents_.clear();
+  }
+  SPIRVOperandList(ArrayRef<SPIRVOperand *> init)
+      : contents_(init.begin(), init.end()) {}
+  operator ArrayRef<SPIRVOperand *>() { return contents_; }
+  void push_back(SPIRVOperand *op) { contents_.push_back(op); }
+  void clear() { contents_.clear();}
+  size_t size() const { return contents_.size(); }
+  SPIRVOperand *&operator[](size_t i) { return contents_[i]; }
+
+private:
+  SmallVector<SPIRVOperand *,8> contents_;
+};
+
+SPIRVOperandList &operator<<(SPIRVOperandList &list, SPIRVOperand *elem) {
+  list.push_back(elem);
+  return list;
+}
+
+SPIRVOperand* MkNum(uint32_t num) {
+  return new SPIRVOperand(LITERAL_INTEGER, num);
+}
+SPIRVOperand* MkId(uint32_t id) {
+  return new SPIRVOperand(NUMBERID, id);
+}
+
 struct SPIRVInstruction {
   explicit SPIRVInstruction(uint16_t WCount, spv::Op Opc, uint32_t ResID,
                             ArrayRef<SPIRVOperand *> Ops)
@@ -113,7 +145,6 @@ private:
 };
 
 struct SPIRVProducerPass final : public ModulePass {
-  typedef std::vector<SPIRVOperand *> SPIRVOperandList;
   typedef DenseMap<Type *, uint32_t> TypeMapType;
   typedef UniqueVector<Type *> TypeList;
   typedef DenseMap<Value *, uint32_t> ValueMapType;
@@ -1993,11 +2024,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(const DataLayout &DL) {
       SPIRVOperandList Ops;
 
       // Find SPIRV instruction for return type
-      uint32_t RetTyID = lookupType(FTy->getReturnType());
-
-      SPIRVOperand *RetTyOp =
-          new SPIRVOperand(SPIRVOperandType::NUMBERID, RetTyID);
-      Ops.push_back(RetTyOp);
+      Ops << MkId(lookupType(FTy->getReturnType()));
 
       // Find SPIRV instructions for parameter types
       for (unsigned k = 0; k < FTy->getNumParams(); k++) {
@@ -2011,10 +2038,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(const DataLayout &DL) {
           }
         }
 
-        uint32_t ParamTyID = lookupType(ParamTy);
-        SPIRVOperand *ParamTyOp =
-            new SPIRVOperand(SPIRVOperandType::NUMBERID, ParamTyID);
-        Ops.push_back(ParamTyOp);
+        Ops << MkId(lookupType(ParamTy));
       }
 
       // Return type id is included in operand list.
@@ -2039,10 +2063,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(const DataLayout &DL) {
     SPIRVOperandList Ops;
 
     Type *ImgTy = ImageType.first;
-    uint32_t ImgTyID = TypeMap[ImgTy];
-    SPIRVOperand *ImgTyOp =
-        new SPIRVOperand(SPIRVOperandType::NUMBERID, ImgTyID);
-    Ops.push_back(ImgTyOp);
+    Ops << MkId(TypeMap[ImgTy]);
 
     // Update OpImageTypeMap.
     ImageType.second = nextID;
@@ -6607,7 +6628,7 @@ void SPIRVProducerPass::WriteSPIRVBinary() {
   SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
 
   for (auto Inst : SPIRVInstList) {
-    SPIRVOperandList Ops = Inst->getOperands();
+    SPIRVOperandList Ops{Inst->getOperands()};
     spv::Op Opcode = static_cast<spv::Op>(Inst->getOpcode());
 
     switch (Opcode) {

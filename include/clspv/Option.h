@@ -34,8 +34,13 @@ bool HackInitializers();
 // TODO(dneto): Remove this eventually when drivers are fixed.
 bool HackInserts();
 
-// Returns true if numeric scalar and vector Undef values should be replaced
-// with OpConstantNull.  Works around a driver bug.
+// Returns true if OpUndef values should be replaced with with OpConstantNull.
+// This works on the following types:
+//  - Numeric scalar types
+//  - Numeric vector types
+//  - Arrays
+//  - Structures
+// Works around a driver bug.
 // TODO(dneto): Remove this eventually when drivers are fixed.
 bool HackUndef();
 

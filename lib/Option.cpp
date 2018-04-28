@@ -57,8 +57,9 @@ llvm::cl::opt<bool> hack_inserts(
 // See https://github.com/google/clspv/issues/95
 llvm::cl::opt<bool> hack_undef(
     "hack-undef", llvm::cl::init(false),
-    llvm::cl::desc("Use OpConstantNull instead of OpUndef for floating point, "
-                   "integer, or vectors of them"));
+    llvm::cl::desc(
+        "Use OpConstantNull instead of OpUndef for floating point scalars or "
+        "vectors, integer scalars or vectors, arrays, or structures"));
 
 llvm::cl::opt<bool>
     pod_ubo("pod-ubo", llvm::cl::init(false),

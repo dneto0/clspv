@@ -2139,7 +2139,8 @@ void SPIRVProducerPass::GenerateSPIRVConstants() {
       Opcode = spv::OpUndef;
       if (hack_undef) {
         Type *type = Cst->getType();
-        if (type->isFPOrFPVectorTy() || type->isIntOrIntVectorTy()) {
+        if (type->isFPOrFPVectorTy() || type->isIntOrIntVectorTy() ||
+            type->isArrayTy() || type->isStructTy()) {
           Opcode = spv::OpConstantNull;
         }
       }

@@ -174,11 +174,25 @@ bool ReplaceLLVMIntrinsicsPass::replaceMemcpy(Module &M) {
 
       for (auto U : F.users()) {
         if (auto CI = dyn_cast<CallInst>(U)) {
-          assert(isa<BitCastInst>(CI->getArgOperand(0)));
-          auto Dst = dyn_cast<BitCastInst>(CI->getArgOperand(0))->getOperand(0);
+          auto* arg0 = CI->getArgOperand(0);
 
-          assert(isa<BitCastInst>(CI->getArgOperand(1)));
-          auto Src = dyn_cast<BitCastInst>(CI->getArgOperand(1))->getOperand(0);
+          auto* arg1 = CI->getArgOperand(1);
+
+          // We want the source and destination as BitCast instructions.
+          // It might be a constant-expression bitcast. This happens when
+          // the source points to constant data.
+          std::unique_ptr<BitCastInst> arg1_as_bitcast_inst;
+          if (auto *ce = dyn_cast<ConstantExpr>(arg1)) {
+            arg1_as_bitcast_inst.reset(
+                dyn_cast<BitCastInst>(ce->getAsInstruction()));
+            arg1 = arg1_as_bitcast_inst.get();
+          }
+
+          assert(isa<BitCastInst>(arg0));
+          auto Dst = dyn_cast<BitCastInst>(arg0)->getOperand(0);
+
+          assert(isa<BitCastInst>(arg1));
+          auto Src = dyn_cast<BitCastInst>(arg1)->getOperand(0);
 
           // The original type of Dst we get from the argument to the bitcast
           // instruction.
@@ -234,9 +248,18 @@ bool ReplaceLLVMIntrinsicsPass::replaceMemcpy(Module &M) {
 
       for (auto CI : CallsToReplaceWithSpirvCopyMemory) {
         auto Arg0 = dyn_cast<BitCastInst>(CI->getArgOperand(0));
-        auto Arg1 = dyn_cast<BitCastInst>(CI->getArgOperand(1));
+        auto* Arg1 = CI->getArgOperand(1);
         auto Arg3 = dyn_cast<ConstantInt>(CI->getArgOperand(3));
         auto Arg4 = dyn_cast<ConstantInt>(CI->getArgOperand(4));
+
+        // Arg1 might be a constant-expression bitcast. This happens when
+        // the source points to constant data.
+        std::unique_ptr<BitCastInst> arg1_as_bitcast_inst;
+        if (auto *ce = dyn_cast<ConstantExpr>(Arg1)) {
+          arg1_as_bitcast_inst.reset(
+              dyn_cast<BitCastInst>(ce->getAsInstruction()));
+          Arg1 = arg1_as_bitcast_inst.get();
+        }
 
         auto I32Ty = Type::getInt32Ty(M.getContext());
         auto Alignment = ConstantInt::get(I32Ty, Arg3->getZExtValue());
@@ -322,7 +345,11 @@ bool ReplaceLLVMIntrinsicsPass::replaceMemcpy(Module &M) {
         // Erase the bitcasts.  A particular bitcast might be used
         // in more than one memcpy, so defer actual deleting until later.
         BitCastsToForget.insert(Arg0);
-        BitCastsToForget.insert(Arg1);
+        // Schedule Arg1 for deletion only if it really was a bitcast
+        // instruction and not a constant bitcast expression.
+        if (arg1_as_bitcast_inst.get() == nullptr) {
+          BitCastsToForget.insert(dyn_cast<Instruction>(Arg1));
+        }
       }
       for (auto* Inst : BitCastsToForget) {
         Inst->eraseFromParent();

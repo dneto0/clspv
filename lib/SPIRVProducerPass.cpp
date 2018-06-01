@@ -784,8 +784,10 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
         }
 
         for (User *U : CandidateUsers) {
-          // Update users of gv with new gv.
-          U->replaceUsesOfWith(GV, NewGV);
+          if (!isa<Constant>(U)) {
+            // Update users of gv with new gv.
+            U->replaceUsesOfWith(GV, NewGV);
+          }
         }
 
         // Delete original gv.

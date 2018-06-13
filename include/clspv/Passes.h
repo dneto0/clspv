@@ -291,4 +291,8 @@ llvm::ModulePass *createUnhideConstantLoadsPass();
 /// chains of insertvalue instructions that only cover some but
 /// not all of a struct.
 llvm::ModulePass *createRewriteInsertsPass();
+
+/// Implement direct buffer access in helper functions, if requested.
+/// @return An LLVM module pass.
+llvm::ModulePass *createReplaceIndirectBufferAccessPass();
 }

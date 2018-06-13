@@ -758,9 +758,13 @@ int main(const int argc, const char *const argv[]) {
   pm.add(clspv::createSplatArgPass());
   pm.add(clspv::createSimplifyPointerBitcastPass());
   pm.add(clspv::createReplacePointerBitcastPass());
+  // Not clear this is the right spot.
+  pm.add(clspv::createReplaceIndirectBufferAccessPass());
   // Replacing pointer bitcasts can leave some trivial GEPs
-  // that are easy to remove.
+  // that are easy to remove.  Also replace GEPs of GEPS
+  // left by replacing indirect buffer accesses.
   pm.add(clspv::createSimplifyPointerBitcastPass());
+
   pm.add(clspv::createUndoTranslateSamplerFoldPass());
 
   if (clspv::Option::ModuleConstantsInStorageBuffer()) {

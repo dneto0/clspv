@@ -23,10 +23,33 @@ using namespace llvm;
 #define DEBUG_TYPE "replaceindirectbufferaccess"
 
 namespace {
-struct ReplaceIndirectBufferAccessPass : public ModulePass {
+class ReplaceIndirectBufferAccessPass : public ModulePass {
+public:
   static char ID;
   ReplaceIndirectBufferAccessPass() : ModulePass(ID) {}
   bool runOnModule(Module &M) override;
+
+private:
+  // What makes a kernel argument require a new descriptor?
+  struct KernelArgDiscriminant {
+    // Different argument type requires different descriptor since logical
+    // addressing requires strongly typed storage buffer variables.
+    Type *type;
+    // If we have multiple arguments of the same type to the same kernel,
+    // then we have to use distinct descriptors because the user could
+    // bind different storage buffers for them.  Use argument index
+    // as a proxy for distinctness.  This might overcount, but we
+    // don't worry about yet.
+    unsigned arg_index;
+  };
+
+  using KernelArgDiscriminantMap = UniqueVector<KernelArgDiscriminant>;
+
+  // Scans all kernel arguments, mapping pointer-to-global arguments to
+  // unique discriminators.  Uses and populates |discrminant_map_|.
+  void LoadDiscriminantMap();
+
+  KernelArgDiscriminantMap discriminant_map_;
 };
 } // namespace
 
@@ -45,7 +68,19 @@ bool ReplaceIndirectBufferAccessPass::runOnModule(Module &M) {
   bool Changed = false;
 
   if (clspv::Option::DirectBufferAccess()) {
+    LoadDiscriminantMap(M);
   }
 
   return Changed;
+}
+
+void ReplaceIndirectBufferAccessPass::LoadDiscriminantMap(Module &M) {
+  discriminant_map_.clear();
+
+  for (Function &F : M) {
+    // Only scan arguments of kernel functions that have bodies.
+    if (F.isDeclaration() || F.getCallingConv() != CallingConv::SPIR_KERNEL) {
+      continue;
+    }
+  }
 }

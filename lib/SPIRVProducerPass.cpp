@@ -912,34 +912,15 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
       // sampler_t and image types have pointer type of struct type with
       // opaque type as field. Extract the struct type. It will be used by
       // global variable for argument.
-      bool IsSamplerType = false;
-      bool IsImageType = false;
-      if (PointerType *TmpArgPTy = dyn_cast<PointerType>(TmpArgTy)) {
-        if (StructType *STy =
-                dyn_cast<StructType>(TmpArgPTy->getElementType())) {
-          if (STy->isOpaque()) {
-            if (STy->getName().equals("opencl.sampler_t")) {
-              IsSamplerType = true;
-              TmpArgTy = STy;
-            } else if (STy->getName().equals("opencl.image2d_ro_t") ||
-                       STy->getName().equals("opencl.image2d_wo_t") ||
-                       STy->getName().equals("opencl.image3d_ro_t") ||
-                       STy->getName().equals("opencl.image3d_wo_t")) {
-              IsImageType = true;
-              TmpArgTy = STy;
-            } else {
-              llvm_unreachable("Argument has opaque type unsupported???");
-            }
-          }
-        }
-      }
+      const bool isSamplerType = IsSamplerType(ArgTy, &TmpArgTy);
+      const bool isImageType = IsImageType(ArgTy, &TmpArgTy);
       const bool IsPointerToLocal = IsLocalPtr(ArgTy);
       // Can't both be pointer-to-local and (sampler or image).
-      assert(!((IsSamplerType || IsImageType) && IsPointerToLocal));
+      assert(!((isSamplerType || isImageType) && IsPointerToLocal));
 
       // Determine the address space for the module-scope variable.
       unsigned AddrSpace = AddressSpace::Global;
-      if (IsSamplerType || IsImageType) {
+      if (isSamplerType || isImageType) {
         AddrSpace = AddressSpace::UniformConstant;
       } else if (PointerType *ArgPTy = dyn_cast<PointerType>(ArgTy)) {
         AddrSpace = ArgPTy->getAddressSpace();
@@ -959,7 +940,7 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
         }
       }
 
-      if (IsSamplerType || IsImageType) {
+      if (isSamplerType || isImageType) {
         GVTy = TmpArgTy;
       } else if (IsPointerToLocal) {
         assert(ArgTy == TmpArgTy);
@@ -1011,7 +992,7 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
         // Always make a new variable if we're forcing distinct descriptor sets.
         GlobalVariable *GV = nullptr;
         auto which_set = GVarsForType.find(GVTy);
-        if (IsSamplerType || IsImageType || which_set == GVarsForType.end() ||
+        if (isSamplerType || isImageType || which_set == GVarsForType.end() ||
             clspv::Option::DistinctKernelDescriptorSets()) {
           GV = make_gvar();
         } else {

@@ -72,6 +72,41 @@ bool IsLocalPtr(llvm::Type *type) {
          type->getPointerAddressSpace() == clspv::AddressSpace::Local;
 }
 
+bool IsSamplerType(llvm::Type *type, llvm::Type **struct_type_ptr) {
+  bool isSamplerType = false;
+  if (PointerType *TmpArgPTy = dyn_cast<PointerType>(type)) {
+    if (StructType *STy = dyn_cast<StructType>(TmpArgPTy->getElementType())) {
+      if (STy->isOpaque()) {
+        if (STy->getName().equals("opencl.sampler_t")) {
+          isSamplerType = true;
+          if (struct_type_ptr)
+            *struct_type_ptr = STy;
+        }
+      }
+    }
+  }
+  return isSamplerType;
+}
+
+bool IsImageType(llvm::Type *type, llvm::Type **struct_type_ptr) {
+  bool isImageType = false;
+  if (PointerType *TmpArgPTy = dyn_cast<PointerType>(type)) {
+    if (StructType *STy = dyn_cast<StructType>(TmpArgPTy->getElementType())) {
+      if (STy->isOpaque()) {
+        if (STy->getName().equals("opencl.image2d_ro_t") ||
+            STy->getName().equals("opencl.image2d_wo_t") ||
+            STy->getName().equals("opencl.image3d_ro_t") ||
+            STy->getName().equals("opencl.image3d_wo_t")) {
+          isImageType = true;
+          if (struct_type_ptr)
+            *struct_type_ptr = STy;
+        }
+      }
+    }
+  }
+  return isImageType;
+}
+
 ArgIdMapType AllocateArgSpecIds(Module &M) {
   ArgIdMapType result;
 

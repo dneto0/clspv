@@ -36,6 +36,14 @@ const char *GetArgKindForType(llvm::Type *type);
 // Returns true if the given type is a pointer-to-local type.
 bool IsLocalPtr(llvm::Type* type);
 
+// Returns true if the given type is a sampler type.  If it is, then the
+// struct type is sent back through the ptr argument.
+bool IsSamplerType(llvm::Type *type, llvm::Type **struct_type_ptr = nullptr);
+
+// Returns true if the given type is a image type.  If it is, then the
+// struct type is sent back through the ptr argument.
+bool IsImageType(llvm::Type *type, llvm::Type **struct_type_ptr = nullptr);
+
 using ArgIdMapType = llvm::DenseMap<const llvm::Argument*, int>;
 
 // Returns a mapping from pointer-to-local Argument to a specialization constant

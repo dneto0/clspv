@@ -32,21 +32,14 @@ namespace clspv {
 
 const char *GetArgKindForType(Type *type) {
   if (type->isPointerTy()) {
-    auto pointeeTy = type->getPointerElementType();
-    if (auto structTy = dyn_cast<StructType>(pointeeTy)) {
-      if (structTy->hasName()) {
-        StringRef name = structTy->getName();
-        const char *result = StringSwitch<const char *>(name)
-                                 .Case("opencl.image2d_ro_t", "ro_image")
-                                 .Case("opencl.image3d_ro_t", "ro_image")
-                                 .Case("opencl.image2d_wo_t", "wo_image")
-                                 .Case("opencl.image3d_wo_t", "wo_image")
-                                 .Case("opencl.sampler_t", "sampler")
-                                 .Default(nullptr);
-        if (result) {
-          return result;
-        }
-      }
+    if (IsSamplerType(type)) {
+      return "sampler";
+    }
+    llvm::Type *image_type = nullptr;
+    if (IsImageType(type, &image_type)) {
+      StringRef name = dyn_cast<StructType>(image_type)->getName();
+      // OpenCL 1.2 only has read-only or write-only images.
+      return name.endswith("_ro_t") ? "ro_image" : "wo_image";
     }
     switch (type->getPointerAddressSpace()) {
     // Pointer to constant and pointer to global are both in

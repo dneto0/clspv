@@ -2734,18 +2734,19 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
 
       // Emit a descriptor map entry for this arg, in case there was no explicit
       // kernel arg mapping metadata.
-      auto argKind = remap_arg_kind(clspv::GetArgKindForType(Arg.getType()));
+      auto argKindName =
+          remap_arg_kind(clspv::GetArgKindNameForType(Arg.getType()));
       if (!ArgMap) {
         if (uses_binding) {
           descriptorMapOut << "kernel," << F.getName() << ",arg,"
                            << Arg.getName() << ",argOrdinal," << arg_index
                            << ",descriptorSet," << DescriptorSetIdx
                            << ",binding," << BindingIdx << ",offset,0,argKind,"
-                           << argKind << "\n";
+                           << argKindName << "\n";
         } else {
           descriptorMapOut << "kernel," << F.getName() << ",arg,"
                            << Arg.getName() << ",argOrdinal," << arg_index
-                           << ",argKind," << argKind << ",arrayElemSize,"
+                           << ",argKind," << argKindName << ",arrayElemSize,"
                            << DL.getTypeAllocSize(
                                   Arg.getType()->getPointerElementType())
                            << ",arrayNumElemSpecId," << ArgSpecIdMap[&Arg]

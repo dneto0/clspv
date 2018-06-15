@@ -30,34 +30,55 @@ using namespace llvm;
 
 namespace clspv {
 
-const char *GetArgKindForType(Type *type) {
+ArgKind GetArgKindForType(Type *type) {
   if (type->isPointerTy()) {
     if (IsSamplerType(type)) {
-      return "sampler";
+      return ArgKind::Sampler;
     }
     llvm::Type *image_type = nullptr;
     if (IsImageType(type, &image_type)) {
       StringRef name = dyn_cast<StructType>(image_type)->getName();
       // OpenCL 1.2 only has read-only or write-only images.
-      return name.endswith("_ro_t") ? "ro_image" : "wo_image";
+      return name.endswith("_ro_t") ? ArgKind::ReadOnlyImage
+                                    : ArgKind::WriteOnlyImage;
     }
     switch (type->getPointerAddressSpace()) {
     // Pointer to constant and pointer to global are both in
     // storage buffers.
     case clspv::AddressSpace::Global:
     case clspv::AddressSpace::Constant:
-      return "buffer";
+      return ArgKind::Buffer;
     case clspv::AddressSpace::Local:
-      return "local";
+      return ArgKind::Local;
     default:
       break;
     }
   } else {
-    return "pod";
+    return ArgKind::Pod;
   }
-  errs() << "Unhandled case in clspv::GetArgKindForType: " << *type << "\n";
+  errs() << "Unhandled case in clspv::GetArgKindNameForType: " << *type << "\n";
+  llvm_unreachable("Unhandled case in clspv::GetArgKindNameForType");
+  return ArgKind::Buffer;
+}
+
+const char *GetArgKindName(ArgKind kind) {
+  switch (kind) {
+  case ArgKind::Buffer:
+    return "buffer";
+  case ArgKind::Local:
+    return "local";
+  case ArgKind::Pod:
+    return "pod";
+  case ArgKind::ReadOnlyImage:
+    return "ro_image";
+  case ArgKind::WriteOnlyImage:
+    return "wo_image";
+  case ArgKind::Sampler:
+    return "sampler";
+  }
+  errs() << "Unhandled case in clspv::GetArgKindForType: " << int(kind) << "\n";
   llvm_unreachable("Unhandled case in clspv::GetArgKindForType");
-  return nullptr;
+  return "";
 }
 
 bool IsLocalPtr(llvm::Type *type) {

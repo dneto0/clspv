@@ -12,15 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <string>
+
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/CommandLine.h"
 
+#include "clspv/AddressSpace.h"
 #include "clspv/Option.h"
 
 #include "ArgKind.h"
+#include "DescriptorCounter.h"
 
 using namespace llvm;
 
@@ -35,7 +43,8 @@ cl::opt<bool>
 class ReplaceIndirectBufferAccessPass : public ModulePass {
 public:
   static char ID;
-  ReplaceIndirectBufferAccessPass() : ModulePass(ID) {}
+  ReplaceIndirectBufferAccessPass()
+      : ModulePass(ID), descriptor_set_(-1), binding_(0) {}
   bool runOnModule(Module &M) override;
 
 private:
@@ -70,6 +79,17 @@ private:
     }
   };
 
+  // LLVM objects we create for each descriptor.
+  struct DescriptorInfo {
+    DescriptorInfo() : resource_type(nullptr), var_fn(nullptr) {}
+    DescriptorInfo(StructType *sty, Function *fn)
+        : resource_type(sty), var_fn(fn) {}
+    // The struct @clspv.resource.type.N = type { [0 x elemty] }
+    llvm::StructType* resource_type;
+    // The function that gives us the base pointer to the OpVariable.
+    llvm::Function* var_fn;
+  };
+
   // Map a descriminant to a unique index.  We don't use a UniqueVector
   // because that requires operator< that I don't want to define on
   // llvm::Type*
@@ -79,7 +99,16 @@ private:
   // unique discriminators.  Uses and populates |discrminant_map_|.
   void LoadDiscriminantMap(Module &);
 
+  // Maps a discriminant to its unique index, starting at 0.
   KernelArgDiscriminantMap discriminant_map_;
+
+  // Indexed by discriminant index.
+  SmallVector<DescriptorInfo, 10> descriptor_info_;
+
+  // Which descriptor set are we using?  If none yet, then this is -1.
+  int descriptor_set_;
+  // The next binding number to use.
+  int binding_;
 };
 } // namespace
 
@@ -108,6 +137,7 @@ bool ReplaceIndirectBufferAccessPass::runOnModule(Module &M) {
 
 void ReplaceIndirectBufferAccessPass::LoadDiscriminantMap(Module &M) {
   discriminant_map_.clear();
+  IRBuilder<> Builder(M.getContext());
   for (Function &F : M) {
     // Only scan arguments of kernel functions that have bodies.
     if (F.isDeclaration() || F.getCallingConv() != CallingConv::SPIR_KERNEL) {
@@ -122,10 +152,54 @@ void ReplaceIndirectBufferAccessPass::LoadDiscriminantMap(Module &M) {
         auto where = discriminant_map_.find(key);
         if (where == discriminant_map_.end()) {
           int index = int(discriminant_map_.size());
+
+          // Save the new unique index for this discriminant.
           discriminant_map_[key] = index;
+
+          // Now make a DescriptorInfo entry.
+
+          // Allocate a descriptor set index if we haven't already gotten one.
+          if (descriptor_set_ < 0) {
+            descriptor_set_ = clspv::TakeDescriptorIndex(&M);
+          }
+
+          // If original argument is:
+          //   Elem addrspace(1)*
+          // Then make type:
+          //   %clspv.resource.type.N = type { [0 x Elem] }
+          auto *arr_type = ArrayType::get(argTy->getPointerElementType(), 0);
+          auto *resource_type = StructType::create(
+              {arr_type},
+              std::string("clspv.resource.type.") + std::to_string(index));
+
+          auto fn_name =
+              std::string("clspv.resource.var.") + std::to_string(index);
+          Function* var_fn = M.getFunction(fn_name);
+          if (!var_fn) {
+            // Make the function
+            PointerType *ptrTy =
+                PointerType::get(resource_type, clspv::AddressSpace::Global);
+            // The paramters are:
+            //  arg index
+            //  descriptor set
+            //  binding
+            Type *i32 = Builder.getInt32Ty();
+            FunctionType *fnTy =
+                FunctionType::get(ptrTy, {i32, i32, i32}, false);
+#if 0
+                FunctionType::get(ptrTy, {Builder.getInt32(arg_index),
+                                          Builder.getInt32(descriptor_set_),
+                                          Builder.getInt32(binding_++)});
+#endif
+            var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
+          }
+          descriptor_info_.push_back(DescriptorInfo(resource_type, var_fn));
+
           if (ShowDiscriminants) {
             outs() << "DBA: Map " << *argTy << " " << arg_index << " -> "
                    << index << "\n";
+            outs() << "DBA:   resource type  " << *resource_type << "\n";
+            outs() << "DBA:   var fn         " << *var_fn << "\n";
           }
         }
       }

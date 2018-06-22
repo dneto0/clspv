@@ -758,6 +758,13 @@ int main(const int argc, const char *const argv[]) {
   pm.add(clspv::createSplatArgPass());
   pm.add(clspv::createSimplifyPointerBitcastPass());
   pm.add(clspv::createReplacePointerBitcastPass());
+
+  pm.add(clspv::createUndoTranslateSamplerFoldPass());
+
+  if (clspv::Option::ModuleConstantsInStorageBuffer()) {
+    pm.add(clspv::createClusterModuleScopeConstantVars());
+  }
+
   // Not clear this is the right spot.
   // TODO: move this after creation of module scope constants.
   pm.add(clspv::createAllocateDescriptorsPass(SamplerMapEntries));
@@ -766,12 +773,6 @@ int main(const int argc, const char *const argv[]) {
   // that are easy to remove.  Also replace GEPs of GEPS
   // left by replacing indirect buffer accesses.
   pm.add(clspv::createSimplifyPointerBitcastPass());
-
-  pm.add(clspv::createUndoTranslateSamplerFoldPass());
-
-  if (clspv::Option::ModuleConstantsInStorageBuffer()) {
-    pm.add(clspv::createClusterModuleScopeConstantVars());
-  }
 
   pm.add(clspv::createSplatSelectConditionPass());
   pm.add(clspv::createRewriteInsertsPass());

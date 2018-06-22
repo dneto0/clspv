@@ -400,6 +400,7 @@ private:
   std::vector<uint32_t> BuiltinDimensionVec;
   bool HasVariablePointers;
   Type *SamplerTy;
+  DenseMap<unsigned,uint32_t> SamplerMapIndexToIDMap;
 
   // If a function F has a pointer-to-__constant parameter, then this variable
   // will map F's type to (G, index of the parameter), where in a first phase
@@ -494,7 +495,8 @@ bool SPIRVProducerPass::runOnModule(Module &module) {
   GenerateLLVMIRInfo(module, DL);
 
   // If we are using a sampler map, find the type of the sampler.
-  if (0 < getSamplerMap().size()) {
+  if (module.getFunction("clspv.sampler.var.literal") ||
+      0 < getSamplerMap().size()) {
     auto SamplerStructTy = module.getTypeByName("opencl.sampler_t");
     if (!SamplerStructTy) {
       SamplerStructTy =
@@ -1264,7 +1266,7 @@ void SPIRVProducerPass::FindTypePerFunc(Function &F) {
 
       // We don't want to track the type of this call as we are going to replace
       // it.
-      if (Call && ("__translate_sampler_initializer" ==
+      if (Call && ("clspv.sampler.var.literal" ==
                    Call->getCalledFunction()->getName())) {
         continue;
       }
@@ -1339,7 +1341,7 @@ void SPIRVProducerPass::FindConstantPerFunc(Function &F) {
     for (Instruction &I : BB) {
       CallInst *Call = dyn_cast<CallInst>(&I);
 
-      if (Call && ("__translate_sampler_initializer" ==
+      if (Call && ("clspv.sampler.var.literal" ==
                    Call->getCalledFunction()->getName())) {
         // We've handled these constants elsewhere, so skip it.
         continue;
@@ -2273,12 +2275,51 @@ void SPIRVProducerPass::GenerateSamplers(Module &M) {
   SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
   ValueMapType &VMap = getValueMap();
 
+  auto& sampler_map = getSamplerMap();
+  SamplerMapIndexToIDMap.clear();
   DenseMap<unsigned, unsigned> SamplerLiteralToIDMap;
+  DenseMap<unsigned, unsigned> SamplerLiteralToDescriptorSetMap;
+  DenseMap<unsigned, unsigned> SamplerLiteralToBindingMap;
 
-  unsigned BindingIdx = 0;
+  // We might have samplers in the sampler map that are not used
+  // in the translation unit.  We need to allocate variables
+  // for them and bindings too.
+  DenseSet<unsigned> used_bindings;
 
-  // Generate the sampler map.
-  for (auto SamplerLiteral : getSamplerMap()) {
+  auto* var_fn = M.getFunction("clspv.sampler.var.literal");
+  if (!var_fn) return;
+  for (auto user : var_fn->users()) {
+    // Populate SamplerLiteralToDescriptorSetMap and
+    // SamplerLiteralToBindingMap.
+    //
+    // Look for calls like
+    //   call %opencl.sampler_t addrspace(2)*
+    //       @clspv.sampler.var.literal(
+    //          i32 descriptor,
+    //          i32 binding,
+    //          i32 index-into-sampler-map)
+    if (auto* call = dyn_cast<CallInst>(user)) {
+      const auto index_into_sampler_map =
+          dyn_cast<ConstantInt>(call->getArgOperand(2))->getZExtValue();
+      if (index_into_sampler_map >= sampler_map.size()) {
+        errs() << "Out of bounds index to sampler map: " << index_into_sampler_map;
+        llvm_unreachable("bad sampler init: out of bounds");
+      }
+
+      auto sampler_value = sampler_map[index_into_sampler_map].first;
+      const auto descriptor_set = static_cast<unsigned>(
+          dyn_cast<ConstantInt>(call->getArgOperand(0))->getZExtValue());
+      const auto binding = static_cast<unsigned>(
+          dyn_cast<ConstantInt>(call->getArgOperand(1))->getZExtValue());
+
+      SamplerLiteralToDescriptorSetMap[sampler_value] = descriptor_set;
+      SamplerLiteralToBindingMap[sampler_value] = binding;
+      used_bindings.insert(binding);
+    }
+  }
+
+  unsigned index = 0;
+  for (auto SamplerLiteral : sampler_map) {
     // Generate OpVariable.
     //
     // GIDOps[0] : Result Type ID
@@ -2288,10 +2329,12 @@ void SPIRVProducerPass::GenerateSamplers(Module &M) {
     Ops << MkId(lookupType(SamplerTy))
         << MkNum(spv::StorageClassUniformConstant);
 
-    auto *Inst = new SPIRVInstruction(spv::OpVariable, nextID, Ops);
+    auto sampler_var_id = nextID++;
+    auto *Inst = new SPIRVInstruction(spv::OpVariable, sampler_var_id, Ops);
     SPIRVInstList.push_back(Inst);
 
-    SamplerLiteralToIDMap[SamplerLiteral.first] = nextID++;
+    SamplerMapIndexToIDMap[index] = sampler_var_id;
+    SamplerLiteralToIDMap[SamplerLiteral.first] = sampler_var_id;
 
     // Find Insert Point for OpDecorate.
     auto DecoInsertPoint =
@@ -2307,14 +2350,25 @@ void SPIRVProducerPass::GenerateSamplers(Module &M) {
     // Ops[2] = LiteralNumber according to Decoration
     Ops.clear();
 
-    uint32_t ArgID = SamplerLiteralToIDMap[SamplerLiteral.first];
-    Ops << MkId(ArgID) << MkNum(spv::DecorationDescriptorSet)
-        << MkNum(clspv::GetCurrentDescriptorIndex(&M));
+    unsigned descriptor_set;
+    unsigned binding;
+    if(SamplerLiteralToBindingMap.find(SamplerLiteral.first) == SamplerLiteralToBindingMap.end()) {
+      // This sampler is not actually used.  Find the next one.
+      for (binding = 0; used_bindings.count(binding); binding++)
+        ;
+      descriptor_set = 0; // Literal samplers always use descriptor set 0.
+      used_bindings.insert(binding);
+    } else {
+      descriptor_set = SamplerLiteralToDescriptorSetMap[SamplerLiteral.first];
+      binding = SamplerLiteralToBindingMap[SamplerLiteral.first];
+    }
+
+    Ops << MkId(sampler_var_id) << MkNum(spv::DecorationDescriptorSet)
+        << MkNum(descriptor_set);
 
     descriptorMapOut << "sampler," << SamplerLiteral.first << ",samplerExpr,\""
                      << SamplerLiteral.second << "\",descriptorSet,"
-                     << clspv::GetCurrentDescriptorIndex(&M) << ",binding," << BindingIdx
-                     << "\n";
+                     << descriptor_set << ",binding," << binding << "\n";
 
     auto *DescDecoInst = new SPIRVInstruction(spv::OpDecorate, Ops);
     SPIRVInstList.insert(DecoInsertPoint, DescDecoInst);
@@ -2323,48 +2377,13 @@ void SPIRVProducerPass::GenerateSamplers(Module &M) {
     // Ops[1] = Decoration (Binding)
     // Ops[2] = LiteralNumber according to Decoration
     Ops.clear();
-    Ops << MkId(ArgID) << MkNum(spv::DecorationBinding) << MkNum(BindingIdx);
-    BindingIdx++;
+    Ops << MkId(sampler_var_id) << MkNum(spv::DecorationBinding)
+        << MkNum(binding);
 
     auto *BindDecoInst = new SPIRVInstruction(spv::OpDecorate, Ops);
     SPIRVInstList.insert(DecoInsertPoint, BindDecoInst);
-  }
-  if (BindingIdx > 0) {
-    // We generated something.
-    clspv::TakeDescriptorIndex(&M);
-  }
 
-  const char *TranslateSamplerFunctionName = "__translate_sampler_initializer";
-
-  auto SamplerFunction = M.getFunction(TranslateSamplerFunctionName);
-
-  // If there are no uses of the sampler function, no work to do!
-  if (!SamplerFunction) {
-    return;
-  }
-
-  // Iterate through the users of the sampler function.
-  for (auto User : SamplerFunction->users()) {
-    if (auto CI = dyn_cast<CallInst>(User)) {
-      // Get the literal used to initialize the sampler.
-      auto Constant = dyn_cast<ConstantInt>(CI->getArgOperand(0));
-
-      if (!Constant) {
-        CI->getArgOperand(0)->print(errs());
-        llvm_unreachable("Argument of sampler initializer was non-constant!");
-      }
-
-      auto SamplerLiteral = static_cast<unsigned>(Constant->getZExtValue());
-
-      if (0 == SamplerLiteralToIDMap.count(SamplerLiteral)) {
-        Constant->print(errs());
-        llvm_unreachable("Sampler literal was not found in sampler map!");
-      }
-
-      // Calls to the sampler literal function to initialize a sampler are
-      // re-routed to the global variables declared for the sampler.
-      VMap[CI] = SamplerLiteralToIDMap[SamplerLiteral];
-    }
+    index++;
   }
 }
 
@@ -4250,23 +4269,22 @@ void SPIRVProducerPass::GenerateInstruction(Instruction &I) {
     Function *Callee = Call->getCalledFunction();
 
     // Sampler initializers become a load of the corresponding sampler.
-    if (Callee->getName().equals("__translate_sampler_initializer")) {
-      // Check that the sampler map was definitely used though.
-      if (0 == getSamplerMap().size()) {
-        errs() << "error: kernel uses a literal sampler but option -samplermap "
-                  "has not been specified\n";
-        llvm_unreachable("Sampler literal in source without sampler map!");
-      }
 
+    if (Callee->getName().equals("clspv.sampler.var.literal")) {
+      // Map this to a load from the variable.
+      const auto index_into_sampler_map =
+          dyn_cast<ConstantInt>(Call->getArgOperand(2))->getZExtValue();
+
+      // Generate an OpLoad
       SPIRVOperandList Ops;
+      const auto load_id = nextID++;
 
       Ops << MkId(lookupType(SamplerTy->getPointerElementType()))
-          << MkId(VMap[Call]);
+          << MkId(SamplerMapIndexToIDMap[index_into_sampler_map]);
 
-      VMap[Call] = nextID;
-      auto *Inst = new SPIRVInstruction(spv::OpLoad, nextID++, Ops);
+      auto *Inst = new SPIRVInstruction(spv::OpLoad, load_id, Ops);
       SPIRVInstList.push_back(Inst);
-
+      VMap[Call] = load_id;
       break;
     }
 

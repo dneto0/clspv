@@ -15,22 +15,24 @@
 #include <string>
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
 
+#include "clspv/AddressSpace.h"
 #include "clspv/Passes.h"
+
+#include "DescriptorCounter.h"
 
 using namespace llvm;
 
 #define DEBUG_TYPE "allocatedescriptors"
-
 
 namespace {
 
@@ -43,8 +45,7 @@ class AllocateDescriptorsPass final : public ModulePass {
 public:
   static char ID;
   AllocateDescriptorsPass()
-      : ModulePass(ID), sampler_map_(), descriptor_set_(-1),
-        binding_(0) {}
+      : ModulePass(ID), sampler_map_(), descriptor_set_(0), binding_(0) {}
   bool runOnModule(Module &M) override;
 
   SamplerMapType &sampler_map() { return sampler_map_; }
@@ -55,15 +56,16 @@ private:
   // if we changed the module.
   bool AllocateDescriptors(Module &M);
 
-  // Allocate descriptor for samplers.  Returns true if we changed the module.
-  bool AllocateSamplerDescriptors(Module &M);
+  // Allocate descriptor for literal samplers.  Returns true if we changed the
+  // module.
+  bool AllocateLiteralSamplerDescriptors(Module &M);
 
   // Allocate descriptor for kernel arguments with uses.  Returns true if we
   // changed the module.
   bool AllocateKernelArgDescriptors(Module &M);
 
   // The sampler map, which is an array ref of pairs, each of which is the
-  // sampler index (starting at zero), followed by the string expression for
+  // sampler constant as an integer, followed by the string expression for
   // the sampler.
   SamplerMapType sampler_map_;
 
@@ -89,19 +91,128 @@ ModulePass *createAllocateDescriptorsPass(SamplerMapType sampler_map) {
 bool AllocateDescriptorsPass::runOnModule(Module &M) {
   bool Changed = false;
 
-  const bool do_it = ShowDescriptors;
+  // Samplers from the sampler map always grab descriptor set 0.
+  Changed |= AllocateLiteralSamplerDescriptors(M);
+  Changed |= AllocateKernelArgDescriptors(M);
 
-  if (do_it) {
-    // Samplers from the sampler map always grab descriptor set 0.
-    Changed |= AllocateSamplerDescriptors(M);
-    Changed |= AllocateKernelArgDescriptors(M);
-  }
   return Changed;
 }
 
-bool AllocateDescriptorsPass::AllocateSamplerDescriptors(Module &M) {
-  outs() << "Allocate sampler descriptors\n";
-  return false;
+bool AllocateDescriptorsPass::AllocateLiteralSamplerDescriptors(Module &M) {
+  if (ShowDescriptors) {
+    outs() << "Allocate literal sampler descriptors\n";
+  }
+  bool Changed = false;
+  auto init_fn = M.getFunction("__translate_sampler_initializer");
+  if (init_fn && sampler_map_.size() == 0) {
+    errs() << "error: kernel uses a literal sampler but option -samplermap "
+              "has not been specified\n";
+    llvm_unreachable("Sampler literal in source without sampler map!");
+  }
+  if (sampler_map_.size()) {
+    Changed = true;
+    if (ShowDescriptors) {
+      outs() << "  Found " << sampler_map_.size()
+             << " samplers in the sampler map\n";
+    }
+    // Replace all things that look like
+    //  call %opencl.sampler_t addrspace(2)*
+    //     @__translate_sampler_initializer(i32 sampler-literal-constant-value)
+    //     #2
+    //
+    // with:
+    //
+    //   call %opencl.sampler_t addrspace(2)*
+    //       @clspv.sampler.var.literal(i32 descriptor, i32 binding, i32
+    //       index-into-sampler-map)
+    //
+    // We need to preserve the index into the sampler map so that later we can
+    // generate the sampler lines in the descriptor map. That needs both the
+    // literal value and the string expression for the literal.
+
+    // Generate the function type for %clspv.sampler.var.literal
+    IRBuilder<> Builder(M.getContext());
+    auto *sampler_struct_ty = M.getTypeByName("opencl.sampler_t");
+    if (!sampler_struct_ty) {
+      sampler_struct_ty =
+          StructType::create(M.getContext(), "opencl.sampler_t");
+    }
+    auto *sampler_ty =
+        sampler_struct_ty->getPointerTo(clspv::AddressSpace::Constant);
+    Type *i32 = Builder.getInt32Ty();
+    FunctionType *fn_ty = FunctionType::get(sampler_ty, {i32, i32, i32}, false);
+
+    auto *var_fn = M.getOrInsertFunction("clspv.sampler.var.literal", fn_ty);
+
+    // Map sampler literal to binding number.
+    DenseMap<unsigned, unsigned> binding_for_value;
+    DenseMap<unsigned, unsigned> index_for_value;
+    unsigned index = 0;
+    for (auto sampler_info : sampler_map_) {
+      const unsigned value = sampler_info.first;
+      const std::string &expr = sampler_info.second;
+      if (0 == binding_for_value.count(value)) {
+        // Make a new entry.
+        binding_for_value[value] = binding_++;
+        index_for_value[value] = index;
+        if (ShowDescriptors) {
+          outs() << "  Map " << value << " to (" << descriptor_set_ << ","
+                 << binding_for_value[value] << ") << " << expr << "\n";
+        }
+      }
+      index++;
+    }
+
+    // Now replace calls to __translate_sampler_initializer
+    if (init_fn) {
+      for (auto user : init_fn->users()) {
+        if (auto* call = dyn_cast<CallInst>(user)) {
+          auto const_val = dyn_cast<ConstantInt>(call->getArgOperand(0));
+
+          if (!const_val) {
+            call->getArgOperand(0)->print(errs());
+            llvm_unreachable(
+                "Argument of sampler initializer was non-constant!");
+          }
+
+          const auto value = static_cast<unsigned>(const_val->getZExtValue());
+
+          auto where = binding_for_value.find(value);
+          if (where == binding_for_value.end()) {
+            errs() << "Sampler literal " << value
+                   << " was not in the sampler map\n";
+            llvm_unreachable("Sampler literal was not found in sampler map!");
+          }
+          const unsigned binding = binding_for_value[value];
+          const unsigned index = index_for_value[value];
+
+          SmallVector<Value *, 3> args = {Builder.getInt32(descriptor_set_),
+                                          Builder.getInt32(binding),
+                                          Builder.getInt32(index)};
+          if (ShowDescriptors) {
+            outs() << "  translate literal sampler " << *const_val << " to ("
+                   << descriptor_set_ << "," << binding << ")\n";
+          }
+          auto *new_call =
+              CallInst::Create(var_fn, args, "", dyn_cast<Instruction>(call));
+          call->replaceAllUsesWith(new_call);
+          call->eraseFromParent();
+        }
+      }
+      init_fn->eraseFromParent();
+    }
+
+    // Allocate the descriptor set we used.
+    ++descriptor_set_;
+    binding_ = 0;
+    const auto set = clspv::TakeDescriptorIndex(&M);
+    assert(set == descriptor_set_);
+  } else {
+    if (ShowDescriptors) {
+      outs() << "  No sampler\n";
+    }
+  }
+  return Changed;
 }
 
 bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {

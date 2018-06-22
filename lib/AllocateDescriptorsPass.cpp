@@ -12,21 +12,65 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <string>
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/CommandLine.h"
+
+#include "clspv/Passes.h"
 
 using namespace llvm;
 
 #define DEBUG_TYPE "allocatedescriptors"
 
+
 namespace {
 
-class AllocateDescriptorsPass : public ModulePass {
+cl::opt<bool> ShowDescriptors("show-desc", cl::init(true), cl::Hidden,
+                              cl::desc("Show descriptors"));
+
+using SamplerMapType = llvm::ArrayRef<std::pair<unsigned, std::string>>;
+
+class AllocateDescriptorsPass final : public ModulePass {
 public:
   static char ID;
-  AllocateDescriptorsPass() : ModulePass(ID) {}
+  AllocateDescriptorsPass()
+      : ModulePass(ID), sampler_map_(), descriptor_set_(-1),
+        binding_(0) {}
   bool runOnModule(Module &M) override;
+
+  SamplerMapType &sampler_map() { return sampler_map_; }
+
+private:
+  // Allocates descriptors for all samplers and kernel arguments that have uses.
+  // Replace their uses with calls to a special compiler builtin.  Returns true
+  // if we changed the module.
+  bool AllocateDescriptors(Module &M);
+
+  // Allocate descriptor for samplers.  Returns true if we changed the module.
+  bool AllocateSamplerDescriptors(Module &M);
+
+  // Allocate descriptor for kernel arguments with uses.  Returns true if we
+  // changed the module.
+  bool AllocateKernelArgDescriptors(Module &M);
+
+  // The sampler map, which is an array ref of pairs, each of which is the
+  // sampler index (starting at zero), followed by the string expression for
+  // the sampler.
+  SamplerMapType sampler_map_;
+
+  // Which descriptor set are we using?  If none yet, then this is -1.
+  int descriptor_set_;
+  // The next binding number to use.
+  int binding_;
 };
 } // namespace
 
@@ -35,9 +79,105 @@ static RegisterPass<AllocateDescriptorsPass> X("AllocateDescriptorsPass",
                                                "Allocate resource descriptors");
 
 namespace clspv {
-ModulePass *createAllocateDescriptorsPass() {
-  return new AllocateDescriptorsPass();
+ModulePass *createAllocateDescriptorsPass(SamplerMapType sampler_map) {
+  auto *result = new AllocateDescriptorsPass();
+  result->sampler_map() = sampler_map;
+  return result;
 }
 } // namespace clspv
 
-bool AllocateDescriptorsPass::runOnModule(Module &M) { return false; }
+bool AllocateDescriptorsPass::runOnModule(Module &M) {
+  bool Changed = false;
+
+  const bool do_it = ShowDescriptors;
+
+  if (do_it) {
+    // Samplers from the sampler map always grab descriptor set 0.
+    Changed |= AllocateSamplerDescriptors(M);
+    Changed |= AllocateKernelArgDescriptors(M);
+  }
+  return Changed;
+}
+
+bool AllocateDescriptorsPass::AllocateSamplerDescriptors(Module &M) {
+  outs() << "Allocate sampler descriptors\n";
+  return false;
+}
+
+bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
+  bool Changed = false;
+  outs() << "Allocate kernel arg descriptors\n";
+#if 0
+  discriminant_map_.clear();
+  IRBuilder<> Builder(M.getContext());
+  for (Function &F : M) {
+    // Only scan arguments of kernel functions that have bodies.
+    if (F.isDeclaration() || F.getCallingConv() != CallingConv::SPIR_KERNEL) {
+      continue;
+    }
+    int arg_index = 0;
+    for (Argument &Arg : F.args()) {
+      Type *argTy = Arg.getType();
+      if (clspv::ArgKind::Buffer == clspv::GetArgKindForType(argTy)) {
+        // Put it in if it isn't there.
+        KernelArgDiscriminant key{argTy, arg_index};
+        auto where = discriminant_map_.find(key);
+        if (where == discriminant_map_.end()) {
+          int index = int(discriminant_map_.size());
+
+          // Save the new unique index for this discriminant.
+          discriminant_map_[key] = index;
+
+          // Now make a DescriptorInfo entry.
+
+          // Allocate a descriptor set index if we haven't already gotten one.
+          if (descriptor_set_ < 0) {
+            descriptor_set_ = clspv::TakeDescriptorIndex(&M);
+          }
+
+          // If original argument is:
+          //   Elem addrspace(1)*
+          // Then make type:
+          //   %clspv.resource.type.N = type { [0 x Elem] }
+          auto *arr_type = ArrayType::get(argTy->getPointerElementType(), 0);
+          auto *resource_type = StructType::create(
+              {arr_type},
+              std::string("clspv.resource.type.") + std::to_string(index));
+
+          auto fn_name =
+              std::string("clspv.resource.var.") + std::to_string(index);
+          Function* var_fn = M.getFunction(fn_name);
+          if (!var_fn) {
+            // Make the function
+            PointerType *ptrTy =
+                PointerType::get(resource_type, clspv::AddressSpace::Global);
+            // The paramters are:
+            //  arg index
+            //  descriptor set
+            //  binding
+            Type *i32 = Builder.getInt32Ty();
+            FunctionType *fnTy =
+                FunctionType::get(ptrTy, {i32, i32, i32}, false);
+#if 0
+                FunctionType::get(ptrTy, {Builder.getInt32(arg_index),
+                                          Builder.getInt32(descriptor_set_),
+                                          Builder.getInt32(binding_++)});
+#endif
+            var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
+          }
+          descriptor_info_.push_back(DescriptorInfo(resource_type, var_fn));
+
+          if (ShowDiscriminants) {
+            outs() << "DBA: Map " << *argTy << " " << arg_index << " -> "
+                   << index << "\n";
+            outs() << "DBA:   resource type  " << *resource_type << "\n";
+            outs() << "DBA:   var fn         " << *var_fn << "\n";
+          }
+        }
+      }
+      arg_index++;
+    }
+  }
+#endif
+  return Changed;
+}

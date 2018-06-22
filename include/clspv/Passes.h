@@ -300,7 +300,8 @@ llvm::ModulePass *createRewriteInsertsPass();
 /// starting with "clspv.resource.*".  Uses of those kernel arguments
 /// and samplers are replaced by calls the special functions yielding
 /// the appropriately typed pointers.
-llvm::ModulePass *createAllocateDescriptorsPass();
+llvm::ModulePass *createAllocateDescriptorsPass(
+    llvm::ArrayRef<std::pair<unsigned, std::string>> samplerMap);
 
 /// Implement direct buffer access in helper functions, if requested.
 /// @return An LLVM module pass.

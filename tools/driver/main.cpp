@@ -759,6 +759,8 @@ int main(const int argc, const char *const argv[]) {
   pm.add(clspv::createSimplifyPointerBitcastPass());
   pm.add(clspv::createReplacePointerBitcastPass());
   // Not clear this is the right spot.
+  // TODO: move this after creation of module scope constants.
+  pm.add(clspv::createAllocateDescriptorsPass());
   pm.add(clspv::createReplaceIndirectBufferAccessPass());
   // Replacing pointer bitcasts can leave some trivial GEPs
   // that are easy to remove.  Also replace GEPs of GEPS

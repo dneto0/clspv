@@ -125,6 +125,7 @@ ModulePass *createReplaceIndirectBufferAccessPass() {
 
 bool ReplaceIndirectBufferAccessPass::runOnModule(Module &M) {
   bool Changed = false;
+  return false;
 
   const bool do_it = clspv::Option::DirectBufferAccess() || ShowDiscriminants;
 

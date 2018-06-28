@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <climits>
 #include <string>
 
 #include "llvm/ADT/ArrayRef.h"
@@ -28,6 +29,7 @@
 #include "clspv/AddressSpace.h"
 #include "clspv/Passes.h"
 
+#include "ArgKind.h"
 #include "DescriptorCounter.h"
 
 using namespace llvm;
@@ -64,15 +66,79 @@ private:
   // changed the module.
   bool AllocateKernelArgDescriptors(Module &M);
 
+  // Allocates the next descriptor set and resets the tracked binding number to
+  // 0.
+  unsigned StartNewDescriptorSet(Module &M) {
+    // Allocate the descriptor set we used.
+    unsigned result = descriptor_set_++;
+    binding_ = 0;
+    const auto set = clspv::TakeDescriptorIndex(&M);
+    assert(set == descriptor_set_);
+    return result;
+  }
+
   // The sampler map, which is an array ref of pairs, each of which is the
   // sampler constant as an integer, followed by the string expression for
   // the sampler.
   SamplerMapType sampler_map_;
 
-  // Which descriptor set are we using?  If none yet, then this is -1.
+  // Which descriptor set are we using?
   int descriptor_set_;
   // The next binding number to use.
   int binding_;
+
+  // What makes a kernel argument require a new descriptor?
+  struct KernelArgDiscriminant {
+    KernelArgDiscriminant() : type(nullptr), arg_index(0) {}
+    KernelArgDiscriminant(Type *the_type, int the_arg_index)
+        : type(the_type), arg_index(the_arg_index) {}
+    // Different argument type requires different descriptor since logical
+    // addressing requires strongly typed storage buffer variables.
+    Type *type;
+    // If we have multiple arguments of the same type to the same kernel,
+    // then we have to use distinct descriptors because the user could
+    // bind different storage buffers for them.  Use argument index
+    // as a proxy for distinctness.  This might overcount, but we
+    // don't worry about yet.
+    int arg_index;
+  };
+  struct KADDenseMapInfo {
+    static KernelArgDiscriminant getEmptyKey() {
+      return KernelArgDiscriminant(nullptr, 0);
+    }
+    static KernelArgDiscriminant getTombstoneKey() {
+      return KernelArgDiscriminant(nullptr, -1);
+    }
+    static unsigned getHashValue(const KernelArgDiscriminant &key) {
+      return unsigned(uintptr_t(key.type)) ^ key.arg_index;
+    }
+    static bool isEqual(const KernelArgDiscriminant &lhs,
+                   const KernelArgDiscriminant &rhs) {
+      return lhs.type == rhs.type && lhs.arg_index == rhs.arg_index;
+    }
+  };
+
+#if 0
+  // LLVM objects we create for each descriptor.
+  struct DescriptorInfo {
+    DescriptorInfo() : resource_type(nullptr), var_fn(nullptr) {}
+    DescriptorInfo(StructType *sty, Function *fn)
+        : resource_type(sty), var_fn(fn) {}
+    // The struct @clspv.resource.type.N = type { [0 x elemty] }
+    llvm::StructType* resource_type;
+    // The function that gives us the base pointer to the OpVariable.
+    llvm::Function* var_fn;
+  };
+#endif
+
+  // Map a descriminant to a unique index.  We don't use a UniqueVector
+  // because that requires operator< that I don't want to define on
+  // llvm::Type*
+  using KernelArgDiscriminantMap = DenseMap<KernelArgDiscriminant, int, KADDenseMapInfo>;
+
+  // Maps a discriminant to its unique index, starting at 0.
+  KernelArgDiscriminantMap discriminant_map_;
+
 };
 } // namespace
 
@@ -110,6 +176,7 @@ bool AllocateDescriptorsPass::AllocateLiteralSamplerDescriptors(Module &M) {
     llvm_unreachable("Sampler literal in source without sampler map!");
   }
   if (sampler_map_.size()) {
+    const unsigned descriptor_set = StartNewDescriptorSet(M);
     Changed = true;
     if (ShowDescriptors) {
       outs() << "  Found " << sampler_map_.size()
@@ -123,7 +190,7 @@ bool AllocateDescriptorsPass::AllocateLiteralSamplerDescriptors(Module &M) {
     // with:
     //
     //   call %opencl.sampler_t addrspace(2)*
-    //       @clspv.sampler.var.literal(i32 descriptor, i32 binding, i32
+    //       @clspv.sampler.var.literal(i32 descriptor set, i32 binding, i32
     //       index-into-sampler-map)
     //
     // We need to preserve the index into the sampler map so that later we can
@@ -156,7 +223,7 @@ bool AllocateDescriptorsPass::AllocateLiteralSamplerDescriptors(Module &M) {
         binding_for_value[value] = binding_++;
         index_for_value[value] = index;
         if (ShowDescriptors) {
-          outs() << "  Map " << value << " to (" << descriptor_set_ << ","
+          outs() << "  Map " << value << " to (" << descriptor_set << ","
                  << binding_for_value[value] << ") << " << expr << "\n";
         }
       }
@@ -186,12 +253,12 @@ bool AllocateDescriptorsPass::AllocateLiteralSamplerDescriptors(Module &M) {
           const unsigned binding = binding_for_value[value];
           const unsigned index = index_for_value[value];
 
-          SmallVector<Value *, 3> args = {Builder.getInt32(descriptor_set_),
+          SmallVector<Value *, 3> args = {Builder.getInt32(descriptor_set),
                                           Builder.getInt32(binding),
                                           Builder.getInt32(index)};
           if (ShowDescriptors) {
             outs() << "  translate literal sampler " << *const_val << " to ("
-                   << descriptor_set_ << "," << binding << ")\n";
+                   << descriptor_set << "," << binding << ")\n";
           }
           auto *new_call =
               CallInst::Create(var_fn, args, "", dyn_cast<Instruction>(call));
@@ -201,12 +268,6 @@ bool AllocateDescriptorsPass::AllocateLiteralSamplerDescriptors(Module &M) {
       }
       init_fn->eraseFromParent();
     }
-
-    // Allocate the descriptor set we used.
-    ++descriptor_set_;
-    binding_ = 0;
-    const auto set = clspv::TakeDescriptorIndex(&M);
-    assert(set == descriptor_set_);
   } else {
     if (ShowDescriptors) {
       outs() << "  No sampler\n";
@@ -218,14 +279,25 @@ bool AllocateDescriptorsPass::AllocateLiteralSamplerDescriptors(Module &M) {
 bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
   bool Changed = false;
   outs() << "Allocate kernel arg descriptors\n";
-#if 0
   discriminant_map_.clear();
   IRBuilder<> Builder(M.getContext());
   for (Function &F : M) {
+    // The descriptor set to use.  UINT_MAX indicates we haven't allocated one
+    // yet.
+    unsigned saved_descriptor_set = UINT_MAX;
+    auto descriptor_set = [this, &M, &saved_descriptor_set]() {
+      if (saved_descriptor_set == UINT_MAX) {
+        saved_descriptor_set = StartNewDescriptorSet(M);
+      }
+      return saved_descriptor_set;
+    };
     // Only scan arguments of kernel functions that have bodies.
     if (F.isDeclaration() || F.getCallingConv() != CallingConv::SPIR_KERNEL) {
       continue;
     }
+    // Prepare to insert arg remapping instructions at the start of the
+    // function.
+    Builder.SetInsertPoint(F.getEntryBlock().getFirstNonPHI());
     int arg_index = 0;
     for (Argument &Arg : F.args()) {
       Type *argTy = Arg.getType();
@@ -233,62 +305,89 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
         // Put it in if it isn't there.
         KernelArgDiscriminant key{argTy, arg_index};
         auto where = discriminant_map_.find(key);
+        int index;
+        StructType *resource_type = nullptr;
         if (where == discriminant_map_.end()) {
-          int index = int(discriminant_map_.size());
+          index = int(discriminant_map_.size());
 
           // Save the new unique index for this discriminant.
           discriminant_map_[key] = index;
 
-          // Now make a DescriptorInfo entry.
-
-          // Allocate a descriptor set index if we haven't already gotten one.
-          if (descriptor_set_ < 0) {
-            descriptor_set_ = clspv::TakeDescriptorIndex(&M);
-          }
+          // We will remap this kernel argument to a SPIR-V module-scope
+          // OpVariable, as follows:
+          //
+          // Create a %clspv.resource.var.N function that returns
+          // the same kind of pointer that the OpVariable evaluates to.
+          // The first two arguments are the descriptor set and binding
+          // to use.
+          //
+          // For each call to a %clspv.resource.var.N with a unique
+          // descriptor set and binding, the SPIRVProducer pass will:
+          // 1) Create a unique OpVariable
+          // 2) Map uses of the call to the function with the base pointer
+          // of the elements in the module-scope storage buffer variable.
+          // So it's something that maps to:
+          //     OpAccessChain %ptr_to_elem %the-var %uint_0 %uint_0
+          // 3) Generate no SPIR-V code for the call itself.
 
           // If original argument is:
           //   Elem addrspace(1)*
-          // Then make type:
+          // Then make a zero-length array to mimic a StorageBuffer struct whose
+          // first element is a RuntimeArray:
+          //
           //   %clspv.resource.type.N = type { [0 x Elem] }
+
+          // Create the type only once.
           auto *arr_type = ArrayType::get(argTy->getPointerElementType(), 0);
-          auto *resource_type = StructType::create(
+          resource_type = StructType::create(
               {arr_type},
               std::string("clspv.resource.type.") + std::to_string(index));
+        } else {
+          index = where->second;
+          resource_type = M.getTypeByName(std::string("clspv.resource.type.") +
+                                          std::to_string(index));
+          assert(resource_type);
+        }
 
-          auto fn_name =
-              std::string("clspv.resource.var.") + std::to_string(index);
-          Function* var_fn = M.getFunction(fn_name);
-          if (!var_fn) {
-            // Make the function
-            PointerType *ptrTy =
-                PointerType::get(resource_type, clspv::AddressSpace::Global);
-            // The paramters are:
-            //  arg index
-            //  descriptor set
-            //  binding
-            Type *i32 = Builder.getInt32Ty();
-            FunctionType *fnTy =
-                FunctionType::get(ptrTy, {i32, i32, i32}, false);
-#if 0
-                FunctionType::get(ptrTy, {Builder.getInt32(arg_index),
-                                          Builder.getInt32(descriptor_set_),
-                                          Builder.getInt32(binding_++)});
-#endif
-            var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
-          }
-          descriptor_info_.push_back(DescriptorInfo(resource_type, var_fn));
+        auto fn_name =
+            std::string("clspv.resource.var.") + std::to_string(index);
+        Function *var_fn = M.getFunction(fn_name);
+        if (!var_fn) {
+          // Make the function
+          PointerType *ptrTy =
+              PointerType::get(resource_type, clspv::AddressSpace::Global);
+          // The parameters are:
+          //  descriptor set
+          //  binding
+          //  arg index
+          Type *i32 = Builder.getInt32Ty();
+          FunctionType *fnTy = FunctionType::get(ptrTy, {i32, i32, i32}, false);
+          var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
+        }
 
-          if (ShowDiscriminants) {
-            outs() << "DBA: Map " << *argTy << " " << arg_index << " -> "
-                   << index << "\n";
-            outs() << "DBA:   resource type  " << *resource_type << "\n";
-            outs() << "DBA:   var fn         " << *var_fn << "\n";
-          }
+        // Replace uses of this argument with a GEP into the the result of
+        // a call to the special builtin.
+        auto *set_arg = Builder.getInt32(descriptor_set());
+        auto *binding_arg = Builder.getInt32(binding_++);
+        auto *arg_index_arg = Builder.getInt32(arg_index);
+        auto *call =
+            Builder.CreateCall(var_fn, {set_arg, binding_arg, arg_index_arg});
+        auto *gep =
+            Builder.CreateGEP(call, {Builder.getInt32(0), Builder.getInt32(0)});
+        Arg.replaceAllUsesWith(gep);
+
+        if (ShowDescriptors) {
+          outs() << "DBA: Map " << *argTy << " " << arg_index << " -> " << index
+                 << "\n";
+          outs() << "DBA:   resource type  " << *resource_type << "\n";
+          outs() << "DBA:   var fn         " << *var_fn << "\n";
+          outs() << "DBA:     var call     " << *call << "\n";
+          outs() << "DBA:     var gep      " << *gep << "\n";
+          outs() << "\n\n";
         }
       }
       arg_index++;
     }
   }
-#endif
   return Changed;
 }

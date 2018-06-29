@@ -720,18 +720,9 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
   // Map for avoiding to generate struct type with same fields.
   DenseMap<Type *, Type *> ArgTyMap;
 
-  // These function calls need a <2 x i32> as an intermediate result but not
-  // the final result.
-  std::unordered_set<std::string> NeedsIVec2{
-      "_Z15get_image_width14ocl_image2d_ro",
-      "_Z15get_image_width14ocl_image2d_wo",
-      "_Z16get_image_height14ocl_image2d_ro",
-      "_Z16get_image_height14ocl_image2d_wo",
-  };
+  FindGlobalConstVars(M, DL);
 
   FindResourceVars(M, DL);
-
-  FindGlobalConstVars(M, DL);
 
   bool HasWorkGroupBuiltin = false;
   for (GlobalVariable &GV : M.globals()) {
@@ -761,6 +752,15 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
   // different kernels.
   DenseMap<Type *, std::set<std::tuple<unsigned, unsigned, unsigned>>>
       GVarsForType;
+
+  // These function calls need a <2 x i32> as an intermediate result but not
+  // the final result.
+  std::unordered_set<std::string> NeedsIVec2{
+      "_Z15get_image_width14ocl_image2d_ro",
+      "_Z15get_image_width14ocl_image2d_wo",
+      "_Z16get_image_height14ocl_image2d_ro",
+      "_Z16get_image_height14ocl_image2d_wo",
+  };
 
   for (Function &F : M) {
     // Handle kernel function first.
@@ -796,12 +796,12 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
             }
           }
         } else if (CallInst *Call = dyn_cast<CallInst>(&I)) {
-          Function *Callee = Call->getCalledFunction();
+          StringRef callee_name = Call->getCalledFunction()->getName();
 
           // Handle image type specially.
-          if (Callee->getName().equals(
+          if (callee_name.equals(
                   "_Z11read_imagef14ocl_image2d_ro11ocl_samplerDv2_f") ||
-              Callee->getName().equals(
+              callee_name.equals(
                   "_Z11read_imagef14ocl_image3d_ro11ocl_samplerDv4_f")) {
             TypeMapType &OpImageTypeMap = getImageTypeMap();
             Type *ImageTy =
@@ -811,7 +811,7 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
             FindConstant(ConstantFP::get(Context, APFloat(0.0f)));
           }
 
-          if (NeedsIVec2.find(Callee->getName()) != NeedsIVec2.end()) {
+          if (NeedsIVec2.find(callee_name) != NeedsIVec2.end()) {
             FindType(VectorType::get(Type::getInt32Ty(Context), 2));
           }
         }

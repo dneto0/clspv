@@ -73,7 +73,7 @@ private:
     unsigned result = descriptor_set_++;
     binding_ = 0;
     const auto set = clspv::TakeDescriptorIndex(&M);
-    assert(set == descriptor_set_);
+    assert(set == result);
     return result;
   }
 
@@ -301,6 +301,10 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
     int arg_index = 0;
     for (Argument &Arg : F.args()) {
       Type *argTy = Arg.getType();
+      // TODO(dneto): Handle POD args.
+      // TODO(dneto): Handle clustered POD args.
+      // TODO(dneto): Handle image args
+      // TODO(dneto): Handle local args.
       if (clspv::ArgKind::Buffer == clspv::GetArgKindForType(argTy)) {
         // Put it in if it isn't there.
         KernelArgDiscriminant key{argTy, arg_index};

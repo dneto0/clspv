@@ -452,10 +452,10 @@ private:
     uint32_t type_id = 0;
   };
   // An ordered list of resource var info.
-  SmallVector<ResourceVarInfo, 8> ResourceVarInfoList
+  SmallVector<ResourceVarInfo, 8> ResourceVarInfoList;
   // Maps a set and binding to the index in ResourceVarInfoList.
   using SetAndBindingToIndexType = DenseMap<SetAndBinding, size_t>;
-  SetAndBindingToIndexType SetAndBindingToIndex;
+  SetAndBindingToIndexType SetAndBindingToIndexMap;
 
   // An ordered list of the kernel arguments of type pointer-to-local.
   using LocalArgList = SmallVector<const Argument*, 8>;
@@ -1147,12 +1147,12 @@ void SPIRVProducerPass::FindResourceVars(Module &M, const DataLayout &DL) {
   SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
   ValueMapType &VMap = getValueMap();
 
-  SetAndBindingToIndex.clear();
+  SetAndBindingToIndexMap.clear();
   ResourceVarInfoList.clear();
   for (Function &F : M) {
     if (F.getName().startswith("clspv.resource.var.")) {
       // Find all calls to this function with distinct set and binding pairs.
-      // Save them in SetAndBindingToInfoMap.
+      // Save them in ResourceVarInfoList and SetAndBindingToIndexMap.
       for (auto &U : F.uses()) {
         if (auto *call = dyn_cast<CallInst>(U.getUser())) {
           const auto set = unsigned(
@@ -1162,9 +1162,9 @@ void SPIRVProducerPass::FindResourceVars(Module &M, const DataLayout &DL) {
           const SetAndBinding key{set, binding};
           auto where = SetAndBindingToIndexMap.find(key);
           if (where == SetAndBindingToIndexMap.end()) {
-            errs() << "RV " << F.getName() << " (" << set << "," << binding >>
-                ")\n";
-            SetAndBindingToIndex[key] = ResourcerVarInfoList.size();
+            errs() << "RV " << F.getName() << " (" << set << "," << binding
+                   << ")\n";
+            SetAndBindingToIndexMap[key] = ResourceVarInfoList.size();
             ResourceVarInfoList.emplace_back(set, binding, &F);
           }
         }

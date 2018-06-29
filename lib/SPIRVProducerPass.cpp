@@ -279,6 +279,10 @@ struct SPIRVProducerPass final : public ModulePass {
   }
 
   void GenerateLLVMIRInfo(Module &M, const DataLayout &DL);
+  // Populate GlobalConstFuncTypeMap. Also, if module-scope __constant will *not*
+  // be converted to a storage buffer, replace each such global variable with
+  // one in the storage class expecgted by SPIR-V.
+  void FindGlobalConstVars(Module &M, const DataLayout &DL);
   // Populate SetAndBindingToInfoMap
   void FindResourceVars(Module &M, const DataLayout &DL);
   bool FindExtInst(Module &M);
@@ -727,98 +731,7 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
 
   FindResourceVars(M, DL);
 
-  // Collect global constant variables.
-  {
-    SmallVector<GlobalVariable *, 8> GVList;
-    SmallVector<GlobalVariable *, 8> DeadGVList;
-    for (GlobalVariable &GV : M.globals()) {
-      if (GV.getType()->getAddressSpace() == AddressSpace::Constant) {
-        if (GV.use_empty()) {
-          DeadGVList.push_back(&GV);
-        } else {
-          GVList.push_back(&GV);
-        }
-      }
-    }
-
-    // Remove dead global __constant variables.
-    for (auto GV : DeadGVList) {
-      GV->eraseFromParent();
-    }
-    DeadGVList.clear();
-
-    if (clspv::Option::ModuleConstantsInStorageBuffer()) {
-      // For now, we only support a single storage buffer.
-      if (GVList.size() > 0) {
-        assert(GVList.size() == 1);
-        const auto *GV = GVList[0];
-        const auto constants_byte_size =
-            (DL.getTypeSizeInBits(GV->getInitializer()->getType())) / 8;
-        const size_t kConstantMaxSize = 65536;
-        if (constants_byte_size > kConstantMaxSize) {
-          outs() << "Max __constant capacity of " << kConstantMaxSize
-                 << " bytes exceeded: " << constants_byte_size
-                 << " bytes used\n";
-          llvm_unreachable("Max __constant capacity exceeded");
-        }
-      }
-    } else {
-      // Change global constant variable's address space to ModuleScopePrivate.
-      auto &GlobalConstFuncTyMap = getGlobalConstFuncTypeMap();
-      for (auto GV : GVList) {
-        // Create new gv with ModuleScopePrivate address space.
-        Type *NewGVTy = GV->getType()->getPointerElementType();
-        GlobalVariable *NewGV = new GlobalVariable(
-            M, NewGVTy, false, GV->getLinkage(), GV->getInitializer(), "",
-            nullptr, GV->getThreadLocalMode(),
-            AddressSpace::ModuleScopePrivate);
-        NewGV->takeName(GV);
-
-        const SmallVector<User *, 8> GVUsers(GV->user_begin(), GV->user_end());
-        SmallVector<User *, 8> CandidateUsers;
-
-        auto record_called_function_type_as_user =
-            [&GlobalConstFuncTyMap](Value *gv, CallInst *call) {
-              // Find argument index.
-              unsigned index = 0;
-              for (unsigned i = 0; i < call->getNumArgOperands(); i++) {
-                if (gv == call->getOperand(i)) {
-                  // TODO(dneto): Should we break here?
-                  index = i;
-                }
-              }
-
-              // Record function type with global constant.
-              GlobalConstFuncTyMap[call->getFunctionType()] =
-                  std::make_pair(call->getFunctionType(), index);
-            };
-
-        for (User *GVU : GVUsers) {
-          if (CallInst *Call = dyn_cast<CallInst>(GVU)) {
-            record_called_function_type_as_user(GV, Call);
-          } else if (GetElementPtrInst *GEP =
-                         dyn_cast<GetElementPtrInst>(GVU)) {
-            // Check GEP users.
-            for (User *GEPU : GEP->users()) {
-              if (CallInst *GEPCall = dyn_cast<CallInst>(GEPU)) {
-                record_called_function_type_as_user(GEP, GEPCall);
-              }
-            }
-          }
-
-          CandidateUsers.push_back(GVU);
-        }
-
-        for (User *U : CandidateUsers) {
-          // Update users of gv with new gv.
-          U->replaceUsesOfWith(GV, NewGV);
-        }
-
-        // Delete original gv.
-        GV->eraseFromParent();
-      }
-    }
-  }
+  FindGlobalConstVars(M, DL);
 
   bool HasWorkGroupBuiltin = false;
   for (GlobalVariable &GV : M.globals()) {
@@ -1140,6 +1053,95 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
 
     // Collect constant information from function.
     FindConstantPerFunc(F);
+  }
+}
+
+void SPIRVProducerPass::FindGlobalConstVars(Module &M, const DataLayout &DL) {
+  SmallVector<GlobalVariable *, 8> GVList;
+  SmallVector<GlobalVariable *, 8> DeadGVList;
+  for (GlobalVariable &GV : M.globals()) {
+    if (GV.getType()->getAddressSpace() == AddressSpace::Constant) {
+      if (GV.use_empty()) {
+        DeadGVList.push_back(&GV);
+      } else {
+        GVList.push_back(&GV);
+      }
+    }
+  }
+
+  // Remove dead global __constant variables.
+  for (auto GV : DeadGVList) {
+    GV->eraseFromParent();
+  }
+  DeadGVList.clear();
+
+  if (clspv::Option::ModuleConstantsInStorageBuffer()) {
+    // For now, we only support a single storage buffer.
+    if (GVList.size() > 0) {
+      assert(GVList.size() == 1);
+      const auto *GV = GVList[0];
+      const auto constants_byte_size =
+          (DL.getTypeSizeInBits(GV->getInitializer()->getType())) / 8;
+      const size_t kConstantMaxSize = 65536;
+      if (constants_byte_size > kConstantMaxSize) {
+        outs() << "Max __constant capacity of " << kConstantMaxSize
+               << " bytes exceeded: " << constants_byte_size << " bytes used\n";
+        llvm_unreachable("Max __constant capacity exceeded");
+      }
+    }
+  } else {
+    // Change global constant variable's address space to ModuleScopePrivate.
+    auto &GlobalConstFuncTyMap = getGlobalConstFuncTypeMap();
+    for (auto GV : GVList) {
+      // Create new gv with ModuleScopePrivate address space.
+      Type *NewGVTy = GV->getType()->getPointerElementType();
+      GlobalVariable *NewGV = new GlobalVariable(
+          M, NewGVTy, false, GV->getLinkage(), GV->getInitializer(), "",
+          nullptr, GV->getThreadLocalMode(), AddressSpace::ModuleScopePrivate);
+      NewGV->takeName(GV);
+
+      const SmallVector<User *, 8> GVUsers(GV->user_begin(), GV->user_end());
+      SmallVector<User *, 8> CandidateUsers;
+
+      auto record_called_function_type_as_user =
+          [&GlobalConstFuncTyMap](Value *gv, CallInst *call) {
+            // Find argument index.
+            unsigned index = 0;
+            for (unsigned i = 0; i < call->getNumArgOperands(); i++) {
+              if (gv == call->getOperand(i)) {
+                // TODO(dneto): Should we break here?
+                index = i;
+              }
+            }
+
+            // Record function type with global constant.
+            GlobalConstFuncTyMap[call->getFunctionType()] =
+                std::make_pair(call->getFunctionType(), index);
+          };
+
+      for (User *GVU : GVUsers) {
+        if (CallInst *Call = dyn_cast<CallInst>(GVU)) {
+          record_called_function_type_as_user(GV, Call);
+        } else if (GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(GVU)) {
+          // Check GEP users.
+          for (User *GEPU : GEP->users()) {
+            if (CallInst *GEPCall = dyn_cast<CallInst>(GEPU)) {
+              record_called_function_type_as_user(GEP, GEPCall);
+            }
+          }
+        }
+
+        CandidateUsers.push_back(GVU);
+      }
+
+      for (User *U : CandidateUsers) {
+        // Update users of gv with new gv.
+        U->replaceUsesOfWith(GV, NewGV);
+      }
+
+      // Delete original gv.
+      GV->eraseFromParent();
+    }
   }
 }
 

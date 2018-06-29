@@ -115,7 +115,7 @@ private:
 char ReplaceIndirectBufferAccessPass::ID = 0;
 static RegisterPass<ReplaceIndirectBufferAccessPass>
     X("ReplaceIndirectBufferAccessPass",
-      "Repace indirect buffer accesses if requested");
+      "Replace indirect buffer accesses if requested");
 
 namespace clspv {
 ModulePass *createReplaceIndirectBufferAccessPass() {

@@ -113,7 +113,7 @@ private:
       return unsigned(uintptr_t(key.type)) ^ key.arg_index;
     }
     static bool isEqual(const KernelArgDiscriminant &lhs,
-                   const KernelArgDiscriminant &rhs) {
+                        const KernelArgDiscriminant &rhs) {
       return lhs.type == rhs.type && lhs.arg_index == rhs.arg_index;
     }
   };
@@ -134,11 +134,11 @@ private:
   // Map a descriminant to a unique index.  We don't use a UniqueVector
   // because that requires operator< that I don't want to define on
   // llvm::Type*
-  using KernelArgDiscriminantMap = DenseMap<KernelArgDiscriminant, int, KADDenseMapInfo>;
+  using KernelArgDiscriminantMap =
+      DenseMap<KernelArgDiscriminant, int, KADDenseMapInfo>;
 
   // Maps a discriminant to its unique index, starting at 0.
   KernelArgDiscriminantMap discriminant_map_;
-
 };
 } // namespace
 
@@ -233,7 +233,7 @@ bool AllocateDescriptorsPass::AllocateLiteralSamplerDescriptors(Module &M) {
     // Now replace calls to __translate_sampler_initializer
     if (init_fn) {
       for (auto user : init_fn->users()) {
-        if (auto* call = dyn_cast<CallInst>(user)) {
+        if (auto *call = dyn_cast<CallInst>(user)) {
           auto const_val = dyn_cast<ConstantInt>(call->getArgOperand(0));
 
           if (!const_val) {
@@ -301,43 +301,54 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
     int arg_index = 0;
     for (Argument &Arg : F.args()) {
       Type *argTy = Arg.getType();
+      if (ShowDescriptors) {
+        outs() << "DBA: Function " << F.getName() << " arg " << arg_index
+               << " type " << *argTy << "\n";
+      }
       // TODO(dneto): Handle POD args.
       // TODO(dneto): Handle clustered POD args.
       // TODO(dneto): Handle image args
       // TODO(dneto): Handle local args.
-      if (clspv::ArgKind::Buffer == clspv::GetArgKindForType(argTy)) {
-        // Put it in if it isn't there.
-        KernelArgDiscriminant key{argTy, arg_index};
-        auto where = discriminant_map_.find(key);
-        int index;
-        StructType *resource_type = nullptr;
-        if (where == discriminant_map_.end()) {
-          index = int(discriminant_map_.size());
+      const auto arg_kind = clspv::GetArgKindForType(argTy);
 
-          // Save the new unique index for this discriminant.
-          discriminant_map_[key] = index;
+      // Put it in if it isn't there.
+      KernelArgDiscriminant key{argTy, arg_index};
+      auto where = discriminant_map_.find(key);
+      int index;
+      StructType *resource_type = nullptr;
+      if (where == discriminant_map_.end()) {
+        index = int(discriminant_map_.size());
 
-          // We will remap this kernel argument to a SPIR-V module-scope
-          // OpVariable, as follows:
-          //
-          // Create a %clspv.resource.var.N function that returns
-          // the same kind of pointer that the OpVariable evaluates to.
-          // The first two arguments are the descriptor set and binding
-          // to use.
-          //
-          // For each call to a %clspv.resource.var.N with a unique
-          // descriptor set and binding, the SPIRVProducer pass will:
-          // 1) Create a unique OpVariable
-          // 2) Map uses of the call to the function with the base pointer
-          // of the elements in the module-scope storage buffer variable.
-          // So it's something that maps to:
-          //     OpAccessChain %ptr_to_elem %the-var %uint_0 %uint_0
-          // 3) Generate no SPIR-V code for the call itself.
+        // Save the new unique index for this discriminant.
+        discriminant_map_[key] = index;
 
+        // We will remap this kernel argument to a SPIR-V module-scope
+        // OpVariable, as follows:
+        //
+        // Create a %clspv.resource.var.<kind>.N function that returns
+        // the same kind of pointer that the OpVariable evaluates to.
+        // The first two arguments are the descriptor set and binding
+        // to use.
+        //
+        // For each call to a %clspv.resource.var.<kind>.N with a unique
+        // descriptor set and binding, the SPIRVProducer pass will:
+        // 1) Create a unique OpVariable
+        // 2) Map uses of the call to the function with the base pointer
+        // to use.
+        //   For a storage buffer it's the the elements in the runtime
+        // array in the module-scope storage buffer variable.
+        // So it's something that maps to:
+        //     OpAccessChain %ptr_to_elem %the-var %uint_0 %uint_0
+        //   For POD data, its something like this:
+        //     OpAccessChain %ptr_to_elem %the-var %uint_0
+        // 3) Generate no SPIR-V code for the call itself.
+
+        switch (arg_kind) {
+        case clspv::ArgKind::Buffer: {
           // If original argument is:
           //   Elem addrspace(1)*
-          // Then make a zero-length array to mimic a StorageBuffer struct whose
-          // first element is a RuntimeArray:
+          // Then make a zero-length array to mimic a StorageBuffer struct
+          // whose first element is a RuntimeArray:
           //
           //   %clspv.resource.type.N = type { [0 x Elem] }
 
@@ -346,50 +357,73 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
           resource_type = StructType::create(
               {arr_type},
               std::string("clspv.resource.type.") + std::to_string(index));
-        } else {
-          index = where->second;
-          resource_type = M.getTypeByName(std::string("clspv.resource.type.") +
-                                          std::to_string(index));
-          assert(resource_type);
+          break;
         }
-
-        auto fn_name =
-            std::string("clspv.resource.var.") + std::to_string(index);
-        Function *var_fn = M.getFunction(fn_name);
-        if (!var_fn) {
-          // Make the function
-          PointerType *ptrTy =
-              PointerType::get(resource_type, clspv::AddressSpace::Global);
-          // The parameters are:
-          //  descriptor set
-          //  binding
-          //  arg index
-          Type *i32 = Builder.getInt32Ty();
-          FunctionType *fnTy = FunctionType::get(ptrTy, {i32, i32, i32}, false);
-          var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
+        case clspv::ArgKind::Pod:
+          resource_type =
+              StructType::create({argTy}, std::string("clspv.resource.type.") +
+                                              std::to_string(index));
+          break;
+        default:
+          errs() << "Unhandled type " << *argTy << "\n";
+          llvm_unreachable("Allocation of descriptors: Unhandled type");
         }
-
-        // Replace uses of this argument with a GEP into the the result of
-        // a call to the special builtin.
-        auto *set_arg = Builder.getInt32(descriptor_set());
-        auto *binding_arg = Builder.getInt32(binding_++);
-        auto *arg_index_arg = Builder.getInt32(arg_index);
-        auto *call =
-            Builder.CreateCall(var_fn, {set_arg, binding_arg, arg_index_arg});
-        auto *gep =
-            Builder.CreateGEP(call, {Builder.getInt32(0), Builder.getInt32(0)});
-        Arg.replaceAllUsesWith(gep);
-
-        if (ShowDescriptors) {
-          outs() << "DBA: Map " << *argTy << " " << arg_index << " -> " << index
-                 << "\n";
-          outs() << "DBA:   resource type  " << *resource_type << "\n";
-          outs() << "DBA:   var fn         " << *var_fn << "\n";
-          outs() << "DBA:     var call     " << *call << "\n";
-          outs() << "DBA:     var gep      " << *gep << "\n";
-          outs() << "\n\n";
-        }
+      } else {
+        index = where->second;
+        resource_type = M.getTypeByName(std::string("clspv.resource.type.") +
+                                        std::to_string(index));
+        assert(resource_type);
       }
+
+      auto fn_name = std::string("clspv.resource.var.") + std::to_string(index);
+      Function *var_fn = M.getFunction(fn_name);
+      if (!var_fn) {
+        // Make the function
+        PointerType *ptrTy =
+            PointerType::get(resource_type, clspv::AddressSpace::Global);
+        // The parameters are:
+        //  descriptor set
+        //  binding
+        //  arg index
+        Type *i32 = Builder.getInt32Ty();
+        FunctionType *fnTy = FunctionType::get(ptrTy, {i32, i32, i32}, false);
+        var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
+      }
+
+      // Replace uses of this argument with something dependent on a a GEP into
+      // the the result of a call to the special builtin.
+      auto *set_arg = Builder.getInt32(descriptor_set());
+      auto *binding_arg = Builder.getInt32(binding_++);
+      auto *arg_index_arg = Builder.getInt32(arg_index);
+      auto *call =
+          Builder.CreateCall(var_fn, {set_arg, binding_arg, arg_index_arg});
+
+      Value *replacement = nullptr;
+      Value *zero = Builder.getInt32(0);
+      if (argTy->isPointerTy()) {
+        // For things that return pointers, return a GEP to the first element
+        // in the runtime array we'll make.
+        replacement = Builder.CreateGEP(call, {zero, zero, zero});
+      } else {
+        // Replace with a load of the (virtual) variable.
+        auto *gep = Builder.CreateGEP(call, {zero, zero});
+        replacement = Builder.CreateLoad(gep);
+      }
+
+      if (ShowDescriptors) {
+        outs() << "DBA: Map " << *argTy << " " << arg_index << " -> " << index
+               << "\n";
+        outs() << "DBA:   resource type        " << *resource_type << "\n";
+        outs() << "DBA:   var fn               " << *var_fn << "\n";
+        outs() << "DBA:     var call           " << *call << "\n";
+        outs() << "DBA:     var replacement    " << *replacement << "\n";
+        outs() << "DBA:     var replacement ty " << *(replacement->getType())
+               << "\n";
+        outs() << "\n\n";
+      }
+
+      Arg.replaceAllUsesWith(replacement);
+
       arg_index++;
     }
   }

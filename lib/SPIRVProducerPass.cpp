@@ -288,6 +288,7 @@ struct SPIRVProducerPass final : public ModulePass {
   bool FindExtInst(Module &M);
   void FindTypePerGlobalVar(GlobalVariable &GV);
   void FindTypePerFunc(Function &F);
+  void FindTypesForResourceVars(Module &M);
   // Inserts |Ty| and relevant sub-types into the |Types| member, indicating that
   // |Ty| and its subtypes will need a corresponding SPIR-V type.
   void FindType(Type *Ty);
@@ -446,10 +447,10 @@ private:
     ResourceVarInfo(unsigned set_arg, unsigned binding_arg, Function *fn)
         : descriptor_set(set_arg), binding(binding_arg), var_fn(fn),
           addr_space(fn->getReturnType()->getPointerAddressSpace()) {}
-    unsigned descriptor_set;
-    unsigned binding;
-    Function *var_fn;    // The @clspv.resource.var.* function.
-    unsigned addr_space; // The LLVM address space
+    const unsigned descriptor_set;
+    const unsigned binding;
+    Function *const var_fn;    // The @clspv.resource.var.* function.
+    const unsigned addr_space; // The LLVM address space
     // The SPIR-V ID of the OpVariable.  Not populated at construction time.
     uint32_t var_id = 0;
     // The SPIR-V ID of the type. Not populated at construction time.
@@ -732,7 +733,9 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
     }
   }
 
-#error "remove arg handling from this code"
+  FindTypesForResourceVars(M);
+
+//#error "remove arg handling from this code"
   // Map kernel functions to their ordinal number in the compilation unit.
   UniqueVector<Function*> KernelOrdinal;
 
@@ -1248,7 +1251,6 @@ void SPIRVProducerPass::FindTypePerFunc(Function &F) {
   // Investigate function's type.
   FunctionType *FTy = F.getFunctionType();
 
-#error "don't handle types here.  Or only if they haver users."
   if (F.getCallingConv() != CallingConv::SPIR_KERNEL) {
     auto &GlobalConstFuncTyMap = getGlobalConstFuncTypeMap();
     // Handle a regular function with global constant parameters.
@@ -1301,6 +1303,15 @@ void SPIRVProducerPass::FindTypePerFunc(Function &F) {
         continue;
       }
 
+      CallInst *Call = dyn_cast<CallInst>(&I);
+
+      if (Call && Call->getCalledFunction()->getName().startswith(
+                      "clspv.resource.var.")) {
+        // This is a fake call representing access to a resource variable.
+        // We handle that elsewhere.
+        continue;
+      }
+
       // Work through the operands of the instruction.
       for (unsigned i = 0; i < I.getNumOperands(); i++) {
         Value *const Op = I.getOperand(i);
@@ -1320,8 +1331,6 @@ void SPIRVProducerPass::FindTypePerFunc(Function &F) {
           continue;
         }
       }
-
-      CallInst *Call = dyn_cast<CallInst>(&I);
 
       // We don't want to track the type of this call as we are going to replace
       // it.
@@ -1350,6 +1359,16 @@ void SPIRVProducerPass::FindTypePerFunc(Function &F) {
   }
 }
 
+void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
+  for (auto& info : ResourceVarInfoList) {
+    Type* type = info.var_fn->getReturnType();
+    // The converted type is the type of the OpVariable we will generate.
+    // If the pointee type is an array of size zero, FindType will convert it
+    // to a runtime array.
+    FindType(type);
+  }
+}
+
 void SPIRVProducerPass::FindType(Type *Ty) {
   TypeList &TyList = getTypeList();
 
@@ -1374,10 +1393,15 @@ void SPIRVProducerPass::FindType(Type *Ty) {
     }
   }
 
-  // OpTypeArray has constant and we need to support type of the constant.
-  if (isa<ArrayType>(Ty)) {
-    LLVMContext &Context = Ty->getContext();
-    FindType(Type::getInt32Ty(Context));
+  // By convention, LLVM array type with 0 elements will map to
+  // OpTypeRuntimeArray.  Otherwise, it will map to OpTypeArray, which
+  // has a constant number of elements. We need to support type of the
+  // constant.
+  if (auto *arrayTy = dyn_cast<ArrayType>(Ty)) {
+    if (arrayTy->getNumElements() > 0) {
+      LLVMContext &Context = Ty->getContext();
+      FindType(Type::getInt32Ty(Context));
+    }
   }
 
   for (Type *SubTy : Ty->subtypes()) {
@@ -1398,15 +1422,15 @@ void SPIRVProducerPass::FindConstantPerFunc(Function &F) {
   // Investigate constants in function body.
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
-      if (auto* call = dyn_cast<CallInst>(&I)) {
-	auto name = call->getCalledFunction()->getName();
+      if (auto *call = dyn_cast<CallInst>(&I)) {
+        auto name = call->getCalledFunction()->getName();
         if (name == "clspv.sampler.var.literal") {
           // We've handled these constants elsewhere, so skip it.
           continue;
         }
         if (name.startswith("clspv.resource.var.")) {
           continue;
-	}
+        }
       }
 
       if (isa<AllocaInst>(I)) {
@@ -1985,53 +2009,98 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
     }
     case Type::ArrayTyID: {
       ArrayType *ArrTy = cast<ArrayType>(Ty);
-      //
-      // Generate OpConstant and OpTypeArray.
-      //
+      const uint64_t Length = ArrTy->getArrayNumElements();
+      if (Length == 0) {
+        // By convention, map it to a RuntimeArray.
 
-      //
-      // Generate OpConstant for array length.
-      //
-      // Ops[0] = Result Type ID
-      // Ops[1] .. Ops[n] = Values LiteralNumber
-      SPIRVOperandList Ops;
+        // Only generate the type once.
+        Type *EleTy = ArrTy->getElementType();
+        if (OpRuntimeTyMap.count(EleTy) == 0) {
+          uint32_t OpTypeRuntimeArrayID = nextID;
+          OpRuntimeTyMap[Ty] = nextID;
 
-      Type *LengthTy = Type::getInt32Ty(Context);
-      uint32_t ResTyID = lookupType(LengthTy);
-      Ops << MkId(ResTyID);
+          //
+          // Generate OpTypeRuntimeArray.
+          //
 
-      uint64_t Length = ArrTy->getArrayNumElements();
-      assert(Length < UINT32_MAX);
-      Ops << MkNum(static_cast<uint32_t>(Length));
+          // OpTypeRuntimeArray
+          // Ops[0] = Element Type ID
+          SPIRVOperandList Ops;
+          Ops << MkId(lookupType(EleTy));
 
-      // Add constant for length to constant list.
-      Constant *CstLength = ConstantInt::get(LengthTy, Length);
-      AllocatedVMap[CstLength] = nextID;
-      VMap[CstLength] = nextID;
-      uint32_t LengthID = nextID;
+          SPIRVInstList.push_back(
+              new SPIRVInstruction(spv::OpTypeRuntimeArray, nextID++, Ops));
 
-      auto *CstInst = new SPIRVInstruction(spv::OpConstant, nextID++, Ops);
-      SPIRVInstList.push_back(CstInst);
+          // Generate OpDecorate.
+          auto DecoInsertPoint = std::find_if(
+              SPIRVInstList.begin(), SPIRVInstList.end(),
+              [](SPIRVInstruction *Inst) -> bool {
+                return Inst->getOpcode() != spv::OpDecorate &&
+                       Inst->getOpcode() != spv::OpMemberDecorate &&
+                       Inst->getOpcode() != spv::OpExtInstImport;
+              });
 
-      // Remember to generate ArrayStride later
-      getTypesNeedingArrayStride().insert(Ty);
+          // Ops[0] = Target ID
+          // Ops[1] = Decoration (ArrayStride)
+          // Ops[2] = Stride Number(Literal Number)
+          Ops.clear();
 
-      //
-      // Generate OpTypeArray.
-      //
-      // Ops[0] = Element Type ID
-      // Ops[1] = Array Length Constant ID
-      Ops.clear();
+          Ops << MkId(OpTypeRuntimeArrayID) << MkNum(spv::DecorationArrayStride)
+              << MkNum(static_cast<uint32_t>(DL.getTypeAllocSize(EleTy)));
 
-      uint32_t EleTyID = lookupType(ArrTy->getElementType());
-      Ops << MkId(EleTyID) << MkId(LengthID);
+          auto *DecoInst = new SPIRVInstruction(spv::OpDecorate, Ops);
+          SPIRVInstList.insert(DecoInsertPoint, DecoInst);
+        }
 
-      // Update TypeMap with nextID.
-      TypeMap[Ty] = nextID;
+      } else {
 
-      auto *ArrayInst = new SPIRVInstruction(spv::OpTypeArray, nextID++, Ops);
-      SPIRVInstList.push_back(ArrayInst);
-      break;
+        //
+        // Generate OpConstant and OpTypeArray.
+        //
+
+        //
+        // Generate OpConstant for array length.
+        //
+        // Ops[0] = Result Type ID
+        // Ops[1] .. Ops[n] = Values LiteralNumber
+        SPIRVOperandList Ops;
+
+        Type *LengthTy = Type::getInt32Ty(Context);
+        uint32_t ResTyID = lookupType(LengthTy);
+        Ops << MkId(ResTyID);
+
+        assert(Length < UINT32_MAX);
+        Ops << MkNum(static_cast<uint32_t>(Length));
+
+        // Add constant for length to constant list.
+        Constant *CstLength = ConstantInt::get(LengthTy, Length);
+        AllocatedVMap[CstLength] = nextID;
+        VMap[CstLength] = nextID;
+        uint32_t LengthID = nextID;
+
+        auto *CstInst = new SPIRVInstruction(spv::OpConstant, nextID++, Ops);
+        SPIRVInstList.push_back(CstInst);
+
+        // Remember to generate ArrayStride later
+        getTypesNeedingArrayStride().insert(Ty);
+
+        //
+        // Generate OpTypeArray.
+        //
+        // Ops[0] = Element Type ID
+        // Ops[1] = Array Length Constant ID
+        Ops.clear();
+
+        uint32_t EleTyID = lookupType(ArrTy->getElementType());
+        Ops << MkId(EleTyID) << MkId(LengthID);
+
+        // Update TypeMap with nextID.
+        TypeMap[Ty] = nextID;
+
+        auto *ArrayInst = new SPIRVInstruction(spv::OpTypeArray, nextID++, Ops);
+        SPIRVInstList.push_back(ArrayInst);
+        break;
+      }
     }
     case Type::VectorTyID: {
       // <4 x i8> is changed to i32.
@@ -5024,7 +5093,8 @@ void SPIRVProducerPass::HandleDeferredInstruction() {
         // Ops[3] ... Ops[n] = Operand 1, ... , Operand n
         SPIRVOperandList Ops;
 
-        Ops << MkId(lookupType(Call->getType())) << MkId(ExtInstImportID) << MkNum(EInst);
+        Ops << MkId(lookupType(Call->getType())) << MkId(ExtInstImportID)
+            << MkNum(EInst);
 
         FunctionType *CalleeFTy = cast<FunctionType>(Call->getFunctionType());
         for (unsigned i = 0; i < CalleeFTy->getNumParams(); i++) {
@@ -5087,14 +5157,14 @@ void SPIRVProducerPass::HandleDeferredInstruction() {
           }
         }
 
-      } else if (Callee->getName().equals("_Z8popcounti") ||
-                 Callee->getName().equals("_Z8popcountj") ||
-                 Callee->getName().equals("_Z8popcountDv2_i") ||
-                 Callee->getName().equals("_Z8popcountDv3_i") ||
-                 Callee->getName().equals("_Z8popcountDv4_i") ||
-                 Callee->getName().equals("_Z8popcountDv2_j") ||
-                 Callee->getName().equals("_Z8popcountDv3_j") ||
-                 Callee->getName().equals("_Z8popcountDv4_j")) {
+      } else if (callee_name.equals("_Z8popcounti") ||
+                 callee_name.equals("_Z8popcountj") ||
+                 callee_name.equals("_Z8popcountDv2_i") ||
+                 callee_name.equals("_Z8popcountDv3_i") ||
+                 callee_name.equals("_Z8popcountDv4_i") ||
+                 callee_name.equals("_Z8popcountDv2_j") ||
+                 callee_name.equals("_Z8popcountDv3_j") ||
+                 callee_name.equals("_Z8popcountDv4_j")) {
         //
         // Generate OpBitCount
         //
@@ -5108,7 +5178,7 @@ void SPIRVProducerPass::HandleDeferredInstruction() {
             InsertPoint, new SPIRVInstruction(spv::OpBitCount,
                                               std::get<2>(*DeferredInst), Ops));
 
-      } else if (Callee->getName().startswith(kCompositeConstructFunctionPrefix)) {
+      } else if (callee_name.startswith(kCompositeConstructFunctionPrefix)) {
 
         // Generate an OpCompositeConstruct
         SPIRVOperandList Ops;
@@ -5124,6 +5194,11 @@ void SPIRVProducerPass::HandleDeferredInstruction() {
             InsertPoint, new SPIRVInstruction(spv::OpCompositeConstruct,
                                               std::get<2>(*DeferredInst), Ops));
 
+      } else if (callee_name.startswith("clspv.resource.var.")) {
+
+        // We have already mapped the call's result value to an ID.
+        // Don't generate any code now.
+
       } else {
         //
         // Generate OpFunctionCall.
@@ -5134,12 +5209,12 @@ void SPIRVProducerPass::HandleDeferredInstruction() {
         // Ops[2] ... Ops[n] = Argument 0, ... , Argument n
         SPIRVOperandList Ops;
 
-        Ops << MkId( lookupType(Call->getType()));
+        Ops << MkId(lookupType(Call->getType()));
 
         uint32_t CalleeID = VMap[Callee];
         if (CalleeID == 0) {
           errs() << "Can't translate function call.  Missing builtin? "
-                 << Callee->getName() << " in: " << *Call << "\n";
+                 << callee_name << " in: " << *Call << "\n";
           // TODO(dneto): Can we error out?  Enabling this llvm_unreachable
           // causes an infinite loop.  Instead, go ahead and generate
           // the bad function call.  A validator will catch the 0-Id.

@@ -279,6 +279,8 @@ struct SPIRVProducerPass final : public ModulePass {
   }
 
   void GenerateLLVMIRInfo(Module &M, const DataLayout &DL);
+  // Populate SetAndBindingToInfoMap
+  void FindResourceVars(Module &M, const DataLayout &DL);
   bool FindExtInst(Module &M);
   void FindTypePerGlobalVar(GlobalVariable &GV);
   void FindTypePerFunc(Function &F);
@@ -300,6 +302,8 @@ struct SPIRVProducerPass final : public ModulePass {
   void GenerateGlobalVar(GlobalVariable &GV);
   void GenerateWorkgroupVars();
   void GenerateSamplers(Module &M);
+  // Generate OpVariables for %clspv.resource.var.* calls.
+  void GenerateResourceVars(Module &M);
   void GenerateFuncPrologue(Function &F);
   void GenerateFuncBody(Function &F);
   void GenerateInstForArg(Function &F);
@@ -432,6 +436,26 @@ private:
   // What module-scope variables already have had their binding information
   // emitted?
   DenseSet<Value*> GVarWithEmittedBindingInfo;
+
+  using SetAndBinding = std::pair<unsigned, unsigned>;
+  struct ResourceVarInfo {
+    ResourceVarInfo(unsigned set_arg, unsigned binding_arg, Function *fn)
+        : descriptor_set(set_arg), binding(binding_arg), var_fn(fn),
+          addr_space(fn->getReturnType()->getPointerAddressSpace()) {}
+    unsigned descriptor_set;
+    unsigned binding;
+    Function *var_fn;    // The @clspv.resource.var.* function.
+    unsigned addr_space; // The LLVM address space
+    // The SPIR-V ID of the OpVariable.  Not populated at construction time.
+    uint32_t var_id = 0;
+    // The SPIR-V ID of the type. Not populated at construction time.
+    uint32_t type_id = 0;
+  };
+  // An ordered list of resource var info.
+  SmallVector<ResourceVarInfo, 8> ResourceVarInfoList
+  // Maps a set and binding to the index in ResourceVarInfoList.
+  using SetAndBindingToIndexType = DenseMap<SetAndBinding, size_t>;
+  SetAndBindingToIndexType SetAndBindingToIndex;
 
   // An ordered list of the kernel arguments of type pointer-to-local.
   using LocalArgList = SmallVector<const Argument*, 8>;
@@ -701,6 +725,8 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
       "_Z16get_image_height14ocl_image2d_wo",
   };
 
+  FindResourceVars(M, DL);
+
   // Collect global constant variables.
   {
     SmallVector<GlobalVariable *, 8> GVList;
@@ -802,7 +828,7 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
     }
   }
 
-
+#error "remove arg handling from this code"
   // Map kernel functions to their ordinal number in the compilation unit.
   UniqueVector<Function*> KernelOrdinal;
 
@@ -1117,6 +1143,36 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
   }
 }
 
+void SPIRVProducerPass::FindResourceVars(Module &M, const DataLayout &DL) {
+  SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
+  ValueMapType &VMap = getValueMap();
+
+  SetAndBindingToIndex.clear();
+  ResourceVarInfoList.clear();
+  for (Function &F : M) {
+    if (F.getName().startswith("clspv.resource.var.")) {
+      // Find all calls to this function with distinct set and binding pairs.
+      // Save them in SetAndBindingToInfoMap.
+      for (auto &U : F.uses()) {
+        if (auto *call = dyn_cast<CallInst>(U.getUser())) {
+          const auto set = unsigned(
+              dyn_cast<ConstantInt>(call->getArgOperand(0))->getZExtValue());
+          const auto binding = unsigned(
+              dyn_cast<ConstantInt>(call->getArgOperand(1))->getZExtValue());
+          const SetAndBinding key{set, binding};
+          auto where = SetAndBindingToIndexMap.find(key);
+          if (where == SetAndBindingToIndexMap.end()) {
+            errs() << "RV " << F.getName() << " (" << set << "," << binding >>
+                ")\n";
+            SetAndBindingToIndex[key] = ResourcerVarInfoList.size();
+            ResourceVarInfoList.emplace_back(set, binding, &F);
+          }
+        }
+      }
+    }
+  }
+}
+
 bool SPIRVProducerPass::FindExtInst(Module &M) {
   LLVMContext &Context = M.getContext();
   bool HasExtInst = false;
@@ -1190,6 +1246,7 @@ void SPIRVProducerPass::FindTypePerFunc(Function &F) {
   // Investigate function's type.
   FunctionType *FTy = F.getFunctionType();
 
+#error "don't handle types here.  Or only if they haver users."
   if (F.getCallingConv() != CallingConv::SPIR_KERNEL) {
     auto &GlobalConstFuncTyMap = getGlobalConstFuncTypeMap();
     // Handle a regular function with global constant parameters.
@@ -1339,12 +1396,15 @@ void SPIRVProducerPass::FindConstantPerFunc(Function &F) {
   // Investigate constants in function body.
   for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
-      CallInst *Call = dyn_cast<CallInst>(&I);
-
-      if (Call && ("clspv.sampler.var.literal" ==
-                   Call->getCalledFunction()->getName())) {
-        // We've handled these constants elsewhere, so skip it.
-        continue;
+      if (auto* call = dyn_cast<CallInst>(&I)) {
+	auto name = call->getCalledFunction()->getName();
+        if (name == "clspv.sampler.var.literal") {
+          // We've handled these constants elsewhere, so skip it.
+          continue;
+        }
+        if (name.startswith("clspv.resource.var.")) {
+          continue;
+	}
       }
 
       if (isa<AllocaInst>(I)) {
@@ -4267,6 +4327,12 @@ void SPIRVProducerPass::GenerateInstruction(Instruction &I) {
   case Instruction::Call: {
     CallInst *Call = dyn_cast<CallInst>(&I);
     Function *Callee = Call->getCalledFunction();
+
+    if (Callee->getName().startswith("clspv.reousrce.var.")) {
+      // This maps to an OpVariable we've already generated.
+      // No code is generated for the call.
+      break;
+    }
 
     // Sampler initializers become a load of the corresponding sampler.
 

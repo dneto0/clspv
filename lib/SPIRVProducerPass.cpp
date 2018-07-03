@@ -245,12 +245,17 @@ struct SPIRVProducerPass final : public ModulePass {
       }
     }
 
-    if (0 == TypeMap.count(Ty)) {
-      Ty->print(errs());
+    auto where = TypeMap.find(Ty);
+    if (where == TypeMap.end()) {
+      if (Ty) {
+        errs() << "Unhandled type " << *Ty << "\n";
+      } else {
+        errs() << "Unhandled type (null)\n";
+      }
       llvm_unreachable("\nUnhandled type!");
     }
 
-    return TypeMap[Ty];
+    return where->second;
   }
   TypeMapType &getImageTypeMap() { return ImageTypeMap; }
   TypeList &getTypeList() { return Types; };
@@ -1469,7 +1474,7 @@ void SPIRVProducerPass::FindType(Type *Ty) {
   }
 
   TyList.insert(Ty);
-      }
+}
 
 void SPIRVProducerPass::FindConstantPerGlobalVar(GlobalVariable &GV) {
   // If the global variable has a (non undef) initializer.

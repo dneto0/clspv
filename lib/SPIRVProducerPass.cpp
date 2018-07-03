@@ -1170,7 +1170,9 @@ void SPIRVProducerPass::FindResourceVars(Module &M, const DataLayout &DL) {
             errs() << "RV " << F.getName() << " (" << set << "," << binding
                    << ")\n";
             SetAndBindingToIndexMap[key] = ResourceVarInfoList.size();
-            ResourceVarInfoList.emplace_back(set, binding, &F);
+            const auto arg_kind = clspv::ArgKind(
+                dyn_cast<ConstantInt>(call->getArgOperand(1))->getZExtValue());
+            ResourceVarInfoList.emplace_back(set, binding, &F, arg_kind);
           }
         }
       }

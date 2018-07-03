@@ -385,9 +385,11 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
         // The parameters are:
         //  descriptor set
         //  binding
+        //  arg kind
         //  arg index
         Type *i32 = Builder.getInt32Ty();
-        FunctionType *fnTy = FunctionType::get(ptrTy, {i32, i32, i32}, false);
+        FunctionType *fnTy =
+            FunctionType::get(ptrTy, {i32, i32, i32, i32}, false);
         var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
       }
 
@@ -395,9 +397,10 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
       // the the result of a call to the special builtin.
       auto *set_arg = Builder.getInt32(descriptor_set());
       auto *binding_arg = Builder.getInt32(binding_++);
+      auto *arg_kind_arg = Builder.getInt32(unsigned(arg_kind));
       auto *arg_index_arg = Builder.getInt32(arg_index);
-      auto *call =
-          Builder.CreateCall(var_fn, {set_arg, binding_arg, arg_index_arg});
+      auto *call = Builder.CreateCall(
+          var_fn, {set_arg, binding_arg, arg_kind_arg, arg_index_arg});
 
       Value *replacement = nullptr;
       Value *zero = Builder.getInt32(0);

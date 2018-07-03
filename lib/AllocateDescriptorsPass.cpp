@@ -316,7 +316,7 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
       KernelArgDiscriminant key{argTy, arg_index};
       auto where = discriminant_map_.find(key);
       int index;
-      StructType *resource_type = nullptr;
+      Type *resource_type = nullptr;
       if (where == discriminant_map_.end()) {
         index = int(discriminant_map_.size());
 
@@ -365,14 +365,27 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
               StructType::create({argTy}, std::string("clspv.resource.type.") +
                                               std::to_string(index));
           break;
+        case clspv::ArgKind::Sampler:
+        case clspv::ArgKind::ReadOnlyImage:
+        case clspv::ArgKind::WriteOnlyImage:
+          // Samplers and images map to their own types.
+          resource_type = argTy;
+          break;
         default:
           errs() << "Unhandled type " << *argTy << "\n";
           llvm_unreachable("Allocation of descriptors: Unhandled type");
         }
       } else {
         index = where->second;
-        resource_type = M.getTypeByName(std::string("clspv.resource.type.") +
-                                        std::to_string(index));
+        switch (arg_kind) {
+        case clspv::ArgKind::Buffer:
+        case clspv::ArgKind::Pod:
+          resource_type = M.getTypeByName(std::string("clspv.resource.type.") +
+                                          std::to_string(index));
+        default:
+          resource_type = argTy;
+          break;
+        }
         assert(resource_type);
       }
 
@@ -404,14 +417,25 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
 
       Value *replacement = nullptr;
       Value *zero = Builder.getInt32(0);
-      if (argTy->isPointerTy()) {
-        // For things that return pointers, return a GEP to the first element
+      switch (arg_kind) {
+      case clspv::ArgKind::Buffer:
+        // Return a GEP to the first element
         // in the runtime array we'll make.
         replacement = Builder.CreateGEP(call, {zero, zero, zero});
-      } else {
-        // Replace with a load of the (virtual) variable.
+        break;
+      case clspv::ArgKind::Pod: {
+        // Replace with a load of the start of the (virtual) variable.
         auto *gep = Builder.CreateGEP(call, {zero, zero});
         replacement = Builder.CreateLoad(gep);
+      } break;
+      case clspv::ArgKind::ReadOnlyImage:
+      case clspv::ArgKind::WriteOnlyImage:
+      case clspv::ArgKind::Sampler: {
+        // Replace with a load of the (virtual) variable.
+        replacement = Builder.CreateLoad(call);
+      } break;
+      case clspv::ArgKind::Local:
+        llvm_unreachable("local is unhandled");
       }
 
       if (ShowDescriptors) {

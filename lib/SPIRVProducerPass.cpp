@@ -444,23 +444,30 @@ private:
 
   using SetAndBinding = std::pair<unsigned, unsigned>;
   struct ResourceVarInfo {
-    ResourceVarInfo(unsigned set_arg, unsigned binding_arg, Function *fn)
+    ResourceVarInfo(unsigned set_arg, unsigned binding_arg, Function *fn,
+                    clspv::ArgKind arg_kind_arg)
         : descriptor_set(set_arg), binding(binding_arg), var_fn(fn),
+          arg_kind(arg_kind_arg),
           addr_space(fn->getReturnType()->getPointerAddressSpace()) {}
     const unsigned descriptor_set;
     const unsigned binding;
-    Function *const var_fn;    // The @clspv.resource.var.* function.
+    Function *const var_fn; // The @clspv.resource.var.* function.
+    const clspv::ArgKind arg_kind;
     const unsigned addr_space; // The LLVM address space
+    GlobalVariable *gvar = nullptr;
     // The SPIR-V ID of the OpVariable.  Not populated at construction time.
     uint32_t var_id = 0;
-    // The SPIR-V ID of the type. Not populated at construction time.
-    uint32_t type_id = 0;
   };
   // An ordered list of resource var info.
   SmallVector<ResourceVarInfo, 8> ResourceVarInfoList;
   // Maps a set and binding to the index in ResourceVarInfoList.
   using SetAndBindingToIndexType = DenseMap<SetAndBinding, size_t>;
   SetAndBindingToIndexType SetAndBindingToIndexMap;
+  // What LLVM types map to SPIR-V types needing layout?  These are the
+  // arrays and structures supporting storage buffers and uniform buffers.
+  TypeList TypesNeedingLayout;
+  // What LLVM struct types map to a SPIR-V struct type with Block decoration?
+  UniqueVector<StructType *> StructTypesNeedingBlock;
 
   // An ordered list of the kernel arguments of type pointer-to-local.
   using LocalArgList = SmallVector<const Argument*, 8>;
@@ -580,6 +587,7 @@ bool SPIRVProducerPass::runOnModule(Module &module) {
   if (0 < getSamplerMap().size()) {
     GenerateSamplers(module);
   }
+  GenerateResourceVars(module);
 
   // Generate SPIRV variables.
   for (GlobalVariable &GV : module.globals()) {
@@ -846,6 +854,8 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
     unsigned Idx = 0;
 
     for (const Argument &Arg : F.args()) {
+      if (Arg.use_empty())
+        continue; // #error dead
       Type *ArgTy = Arg.getType();
 
       // The pointee type of the module scope variable we will make.
@@ -1362,12 +1372,54 @@ void SPIRVProducerPass::FindTypePerFunc(Function &F) {
 }
 
 void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
+  // Record types so they are generated.
+  TypesNeedingLayout.reset();
+  StructTypesNeedingBlock.reset();
+
   for (auto& info : ResourceVarInfoList) {
     Type* type = info.var_fn->getReturnType();
     // The converted type is the type of the OpVariable we will generate.
     // If the pointee type is an array of size zero, FindType will convert it
     // to a runtime array.
     FindType(type);
+
+    switch (info.arg_kind) {
+    case clspv::ArgKind::Buffer:
+    case clspv::ArgKind::Pod:
+      if (auto *sty = dyn_cast<StructType>(type)) {
+        StructTypesNeedingBlock.insert(sty);
+      } else {
+        errs() << *type << "\n";
+        llvm_unreachable("Global and POD arguments must map to structures!");
+      }
+      break;
+    default:
+      break;
+    }
+  }
+
+  // Traverse the arrays and structures underneath each Block, and
+  // mark them as needing layout.
+  std::vector<Type *> work_list(StructTypesNeedingBlock.begin(),
+                                StructTypesNeedingBlock.end());
+  while (!work_list.empty()) {
+    Type *type = work_list.back();
+    work_list.pop_back();
+    TypesNeedingLayout.insert(type);
+    switch(type->getTypeID()) {
+      case Type::ArrayTyID:
+        work_list.push_back(type->getPointerElementType());
+        // Remember this array type for deferred decoration.
+        TypesNeedingArrayStride.insert(type);
+        break;
+      case Type::StructTyID:
+        for (auto *elem_ty : cast<StructType>(type)->elements()) {
+          work_list.push_back(elem_ty);
+        }
+      default:
+        // This type and its contained types don't get layout.
+        break;
+    }
   }
 }
 
@@ -1411,7 +1463,7 @@ void SPIRVProducerPass::FindType(Type *Ty) {
   }
 
   TyList.insert(Ty);
-}
+      }
 
 void SPIRVProducerPass::FindConstantPerGlobalVar(GlobalVariable &GV) {
   // If the global variable has a (non undef) initializer.
@@ -1885,6 +1937,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
       for (auto *EleTy : STy->elements()) {
         uint32_t EleTyID = lookupType(EleTy);
 
+        // #error "TODO(dneto): Remove this since runtime arrays are zero-length arrays"
         // Check OpTypeRuntimeArray.
         if (isa<PointerType>(EleTy)) {
           // TODO(dneto): Isn't this a straight lookup instead of a loop?
@@ -1917,6 +1970,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
 
       const auto StructLayout = DL.getStructLayout(STy);
 
+      // #error TODO(dneto): Only do this if in TypesNeedingLayout.
       for (unsigned MemberIdx = 0; MemberIdx < STy->getNumElements();
            MemberIdx++) {
         // Ops[0] = Structure Type ID
@@ -1936,27 +1990,13 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
       }
 
       // Generate OpDecorate.
-      for (auto ArgGV : ArgGVMap) {
-        Type *ArgGVTy = ArgGV.second->getType();
-        PointerType *PTy = cast<PointerType>(ArgGVTy);
-        Type *ArgTy = PTy->getElementType();
+      if (StructTypesNeedingBlock.idFor(STy)) {
+        Ops.clear();
+        // Use Block decorations with StorageBuffer storage class.
+        Ops << MkId(STyID) << MkNum(spv::DecorationBlock);
 
-        // Struct type from argument is already distinguished with the other
-        // struct types on llvm types. As a result, if current processing struct
-        // type is same with argument type, we can generate OpDecorate with
-        // Block or BufferBlock.
-        if (ArgTy == STy) {
-          // Ops[0] = Target ID
-          // Ops[1] = Decoration (Block or BufferBlock)
-          Ops.clear();
-
-          // Use Block decorations with StorageBuffer storage class.
-          Ops << MkId(STyID) << MkNum(spv::DecorationBlock);
-
-          auto *DecoInst = new SPIRVInstruction(spv::OpDecorate, Ops);
-          SPIRVInstList.insert(DecoInsertPoint, DecoInst);
-          break;
-        }
+        auto *DecoInst = new SPIRVInstruction(spv::OpDecorate, Ops);
+        SPIRVInstList.insert(DecoInsertPoint, DecoInst);
       }
       break;
     }
@@ -2033,6 +2073,8 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
           SPIRVInstList.push_back(
               new SPIRVInstruction(spv::OpTypeRuntimeArray, nextID++, Ops));
 
+          // Array Stride will be applied later.
+#if 0
           // Generate OpDecorate.
           auto DecoInsertPoint = std::find_if(
               SPIRVInstList.begin(), SPIRVInstList.end(),
@@ -2052,6 +2094,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
 
           auto *DecoInst = new SPIRVInstruction(spv::OpDecorate, Ops);
           SPIRVInstList.insert(DecoInsertPoint, DecoInst);
+#endif
         }
 
       } else {
@@ -2518,6 +2561,10 @@ void SPIRVProducerPass::GenerateSamplers(Module &M) {
 
     index++;
   }
+}
+
+void SPIRVProducerPass::GenerateResourceVars(Module &M) {
+
 }
 
 void SPIRVProducerPass::GenerateGlobalVar(GlobalVariable &GV) {

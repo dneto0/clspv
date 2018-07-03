@@ -308,6 +308,7 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
       // TODO(dneto): Handle POD args.
       // TODO(dneto): Handle clustered POD args.
       // TODO(dneto): Handle image args
+      // TODO(dneto): Handle sampler args
       // TODO(dneto): Handle local args.
       const auto arg_kind = clspv::GetArgKindForType(argTy);
 

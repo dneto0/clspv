@@ -455,7 +455,6 @@ private:
     Function *const var_fn; // The @clspv.resource.var.* function.
     const clspv::ArgKind arg_kind;
     const unsigned addr_space; // The LLVM address space
-    GlobalVariable *gvar = nullptr;
     // The SPIR-V ID of the OpVariable.  Not populated at construction time.
     uint32_t var_id = 0;
   };
@@ -2554,6 +2553,35 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
 
     auto *Inst = new SPIRVInstruction(spv::OpVariable, info.var_id, Ops);
     SPIRVInstList.push_back(Inst);
+
+    // Map calls to the variable-builtin to this variable ID.
+    for (auto &U : info.var_fn->uses()) {
+      if (auto *call = dyn_cast<CallInst>(U.getUser())) {
+        VMap[call] = info.var_id;
+      }
+    }
+
+    // Decorate with DescriptorSet and Binding.
+    // Find Insert Point for OpDecorate.
+    auto DecoInsertPoint =
+        std::find_if(SPIRVInstList.begin(), SPIRVInstList.end(),
+                     [](SPIRVInstruction *Inst) -> bool {
+                       return Inst->getOpcode() != spv::OpDecorate &&
+                              Inst->getOpcode() != spv::OpMemberDecorate &&
+                              Inst->getOpcode() != spv::OpExtInstImport;
+                     });
+
+    Ops.clear();
+    Ops << MkId(info.var_id) << MkNum(spv::DecorationDescriptorSet)
+        << MkNum(info.descriptor_set);
+    SPIRVInstList.insert(DecoInsertPoint,
+                         new SPIRVInstruction(spv::OpDecorate, Ops));
+
+    Ops.clear();
+    Ops << MkId(info.var_id) << MkNum(spv::DecorationBinding)
+        << MkNum(info.binding);
+    SPIRVInstList.insert(DecoInsertPoint,
+                         new SPIRVInstruction(spv::OpDecorate, Ops));
   }
 }
 

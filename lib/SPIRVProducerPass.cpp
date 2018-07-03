@@ -325,6 +325,7 @@ struct SPIRVProducerPass final : public ModulePass {
   // have been created.
   uint32_t GetI32Zero();
   spv::StorageClass GetStorageClass(unsigned AddrSpace) const;
+  spv::StorageClass GetStorageClass(clspv::ArgKind arg_kind) const;
   spv::BuiltIn GetBuiltin(StringRef globalVarName) const;
   // Returns the GLSL extended instruction enum that the given function
   // call maps to.  If none, then returns the 0 value, i.e. GLSLstd4580Bad.
@@ -1693,6 +1694,21 @@ spv::StorageClass SPIRVProducerPass::GetStorageClass(unsigned AddrSpace) const {
   }
 }
 
+spv::StorageClass
+SPIRVProducerPass::GetStorageClass(clspv::ArgKind arg_kind) const {
+  switch (arg_kind) {
+  case clspv::ArgKind::Buffer:
+  case clspv::ArgKind::Pod:
+    return spv::StorageClassStorageBuffer;
+  case clspv::ArgKind::Local:
+    return spv::StorageClassWorkgroup;
+  case clspv::ArgKind::ReadOnlyImage:
+  case clspv::ArgKind::WriteOnlyImage:
+  case clspv::ArgKind::Sampler:
+    return spv::StorageClassUniformConstant;
+  }
+}
+
 spv::BuiltIn SPIRVProducerPass::GetBuiltin(StringRef Name) const {
   return StringSwitch<spv::BuiltIn>(Name)
       .Case("__spirv_GlobalInvocationId", spv::BuiltInGlobalInvocationId)
@@ -2522,7 +2538,23 @@ void SPIRVProducerPass::GenerateSamplers(Module &M) {
 }
 
 void SPIRVProducerPass::GenerateResourceVars(Module &M) {
+  SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
+  ValueMapType &VMap = getValueMap();
 
+  for (auto &info : ResourceVarInfoList) {
+    // Generate an OpVariable
+    Type *type = info.var_fn->getReturnType();
+
+    info.var_id = nextID++;
+
+    const auto type_id = lookupType(type);
+    const auto sc = GetStorageClass(info.arg_kind);
+    SPIRVOperandList Ops;
+    Ops << MkId(type_id) << MkNum(sc);
+
+    auto *Inst = new SPIRVInstruction(spv::OpVariable, info.var_id, Ops);
+    SPIRVInstList.push_back(Inst);
+  }
 }
 
 void SPIRVProducerPass::GenerateGlobalVar(GlobalVariable &GV) {
@@ -2751,7 +2783,7 @@ void SPIRVProducerPass::GenerateGlobalVar(GlobalVariable &GV) {
     // provided by the host at binding 0 of the next descriptor set.
     const uint32_t descriptor_set = TakeDescriptorIndex(&M);
 
-    // Emit the intiialier to the descriptor map file.
+    // Emit the intializer to the descriptor map file.
     // Use "kind,buffer" to indicate storage buffer. We might want to expand
     // that later to other types, like uniform buffer.
     descriptorMapOut << "constant,descriptorSet," << descriptor_set

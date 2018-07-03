@@ -1378,24 +1378,30 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
 
   for (auto& info : ResourceVarInfoList) {
     Type* type = info.var_fn->getReturnType();
-    // The converted type is the type of the OpVariable we will generate.
-    // If the pointee type is an array of size zero, FindType will convert it
-    // to a runtime array.
-    FindType(type);
 
     switch (info.arg_kind) {
     case clspv::ArgKind::Buffer:
     case clspv::ArgKind::Pod:
-      if (auto *sty = dyn_cast<StructType>(type)) {
+      if (auto *sty = dyn_cast<StructType>(type->getPointerElementType())) {
         StructTypesNeedingBlock.insert(sty);
       } else {
         errs() << *type << "\n";
         llvm_unreachable("Global and POD arguments must map to structures!");
       }
       break;
+    case clspv::ArgKind::ReadOnlyImage:
+    case clspv::ArgKind::WriteOnlyImage:
+      // We need "float" for the sampled component type.
+      FindType(Type::getFloatTy(M.getContext()));
+      break;
     default:
       break;
     }
+
+    // The converted type is the type of the OpVariable we will generate.
+    // If the pointee type is an array of size zero, FindType will convert it
+    // to a runtime array.
+    FindType(type);
   }
 
   // Traverse the arrays and structures underneath each Block, and
@@ -1408,7 +1414,7 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
     TypesNeedingLayout.insert(type);
     switch(type->getTypeID()) {
       case Type::ArrayTyID:
-        work_list.push_back(type->getPointerElementType());
+        work_list.push_back(type->getArrayElementType());
         // Remember this array type for deferred decoration.
         TypesNeedingArrayStride.insert(type);
         break;

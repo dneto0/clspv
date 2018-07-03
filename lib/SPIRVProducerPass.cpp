@@ -1724,6 +1724,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
 
   // Map for OpTypeRuntimeArray. If argument has pointer type, 2 spirv type
   // instructions are generated. They are OpTypePointer and OpTypeRuntimeArray.
+  // #error TODO(dneto): remove this.
   DenseMap<Type *, uint32_t> OpRuntimeTyMap;
 
   for (Type *Ty : getTypeList()) {
@@ -1773,17 +1774,14 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
         }
       }
 
-      bool IsOpTypeRuntimeArray = false;
-      bool HasArgUser = false;
+      const bool HasArgUser = true;
+#if 0
 
       for (auto ArgGV : ArgGVMap) {
         auto Arg = ArgGV.first;
 
         Type *ArgTy = Arg->getType();
         if (ArgTy == PTy) {
-          if (AddrSpace != AddressSpace::UniformConstant) {
-            IsOpTypeRuntimeArray = true;
-          }
 
           for (auto U : Arg->users()) {
             if (!isa<GetElementPtrInst>(U) || (U->getType() == PTy)) {
@@ -1793,8 +1791,9 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
           }
         }
       }
+#endif
 
-      if ((!IsOpTypeRuntimeArray || HasArgUser) && !UseExistingOpTypePointer) {
+      if (HasArgUser && !UseExistingOpTypePointer) {
         //
         // Generate OpTypePointer.
         //
@@ -1809,47 +1808,6 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
 
         auto *Inst = new SPIRVInstruction(spv::OpTypePointer, nextID++, Ops);
         SPIRVInstList.push_back(Inst);
-      }
-
-      if (IsOpTypeRuntimeArray) {
-        //
-        // Generate OpTypeRuntimeArray.
-        //
-
-        // OpTypeRuntimeArray
-        // Ops[0] = Element Type ID
-        SPIRVOperandList Ops;
-
-        Type *EleTy = PTy->getElementType();
-        Ops << MkId(lookupType(EleTy));
-
-        uint32_t OpTypeRuntimeArrayID = nextID;
-        assert(0 == OpRuntimeTyMap.count(Ty));
-        OpRuntimeTyMap[Ty] = nextID;
-
-        auto *Inst =
-            new SPIRVInstruction(spv::OpTypeRuntimeArray, nextID++, Ops);
-        SPIRVInstList.push_back(Inst);
-
-        // Generate OpDecorate.
-        auto DecoInsertPoint =
-            std::find_if(SPIRVInstList.begin(), SPIRVInstList.end(),
-                         [](SPIRVInstruction *Inst) -> bool {
-                           return Inst->getOpcode() != spv::OpDecorate &&
-                                  Inst->getOpcode() != spv::OpMemberDecorate &&
-                                  Inst->getOpcode() != spv::OpExtInstImport;
-                         });
-
-        // Ops[0] = Target ID
-        // Ops[1] = Decoration (ArrayStride)
-        // Ops[2] = Stride Number(Literal Number)
-        Ops.clear();
-
-        Ops << MkId(OpTypeRuntimeArrayID) << MkNum(spv::DecorationArrayStride)
-            << MkNum(static_cast<uint32_t>(DL.getTypeAllocSize(EleTy)));
-
-        auto *DecoInst = new SPIRVInstruction(spv::OpDecorate, Ops);
-        SPIRVInstList.insert(DecoInsertPoint, DecoInst);
       }
       break;
     }

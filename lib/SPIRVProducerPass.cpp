@@ -473,6 +473,9 @@ private:
   TypeList TypesNeedingLayout;
   // What LLVM struct types map to a SPIR-V struct type with Block decoration?
   UniqueVector<StructType *> StructTypesNeedingBlock;
+  // For a call that represents a load from an opaque type (samplers, images),
+  // map it to the variable id it should load from.
+  DenseMap<CallInst *, uint32_t> ResourceVarDeferredLoadCalls;
 
   // An ordered list of the kernel arguments of type pointer-to-local.
   using LocalArgList = SmallVector<const Argument*, 8>;
@@ -1398,6 +1401,12 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
     case clspv::ArgKind::WriteOnlyImage:
       // We need "float" for the sampled component type.
       FindType(Type::getFloatTy(M.getContext()));
+      // Fall through
+    case clspv::ArgKind::Sampler:
+      // Sampler and image types map to the pointee type but
+      // in the uniform constant address space.
+      type = PointerType::get(type->getPointerElementType(),
+                              clspv::AddressSpace::UniformConstant);
       break;
     default:
       break;
@@ -2554,6 +2563,17 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
   for (auto &info : ResourceVarInfoList) {
     // Generate an OpVariable
     Type *type = info.var_fn->getReturnType();
+    // Remap the address space for opaque types.
+    switch (info.arg_kind) {
+    case clspv::ArgKind::Sampler:
+    case clspv::ArgKind::ReadOnlyImage:
+    case clspv::ArgKind::WriteOnlyImage:
+      type = PointerType::get(type->getPointerElementType(),
+                              clspv::AddressSpace::UniformConstant);
+      break;
+    default:
+      break;
+    }
 
     info.var_id = nextID++;
 
@@ -2565,10 +2585,24 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
     auto *Inst = new SPIRVInstruction(spv::OpVariable, info.var_id, Ops);
     SPIRVInstList.push_back(Inst);
 
-    // Map calls to the variable-builtin to this variable ID.
+    // Map calls to the variable-builtin-function.
     for (auto &U : info.var_fn->uses()) {
       if (auto *call = dyn_cast<CallInst>(U.getUser())) {
-        VMap[call] = info.var_id;
+        switch (info.arg_kind) {
+        case clspv::ArgKind::Buffer:
+        case clspv::ArgKind::Pod:
+          // The call maps to the variable directly.
+          VMap[call] = info.var_id;
+          break;
+        case clspv::ArgKind::Sampler:
+        case clspv::ArgKind::ReadOnlyImage:
+        case clspv::ArgKind::WriteOnlyImage:
+          // The call maps to a load we generate later.
+          ResourceVarDeferredLoadCalls[call] = info.var_id;
+          break;
+        default:
+          llvm_unreachable("Unhandled arg kind");
+        }
       }
     }
 
@@ -4479,9 +4513,24 @@ void SPIRVProducerPass::GenerateInstruction(Instruction &I) {
     CallInst *Call = dyn_cast<CallInst>(&I);
     Function *Callee = Call->getCalledFunction();
 
-    if (Callee->getName().startswith("clspv.reousrce.var.")) {
-      // This maps to an OpVariable we've already generated.
-      // No code is generated for the call.
+    if (Callee->getName().startswith("clspv.resource.var.")) {
+      if (ResourceVarDeferredLoadCalls.count(Call)) {
+        // Generate an OpLoad
+        SPIRVOperandList Ops;
+        const auto load_id = nextID++;
+
+        Ops << MkId(lookupType(Call->getType()->getPointerElementType()))
+            << MkId(ResourceVarDeferredLoadCalls[Call]);
+
+        auto *Inst = new SPIRVInstruction(spv::OpLoad, load_id, Ops);
+        SPIRVInstList.push_back(Inst);
+        VMap[Call] = load_id;
+        break;
+
+      } else {
+        // This maps to an OpVariable we've already generated.
+        // No code is generated for the call.
+      }
       break;
     }
 

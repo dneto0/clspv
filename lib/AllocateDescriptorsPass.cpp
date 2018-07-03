@@ -118,19 +118,6 @@ private:
     }
   };
 
-#if 0
-  // LLVM objects we create for each descriptor.
-  struct DescriptorInfo {
-    DescriptorInfo() : resource_type(nullptr), var_fn(nullptr) {}
-    DescriptorInfo(StructType *sty, Function *fn)
-        : resource_type(sty), var_fn(fn) {}
-    // The struct @clspv.resource.type.N = type { [0 x elemty] }
-    llvm::StructType* resource_type;
-    // The function that gives us the base pointer to the OpVariable.
-    llvm::Function* var_fn;
-  };
-#endif
-
   // Map a descriminant to a unique index.  We don't use a UniqueVector
   // because that requires operator< that I don't want to define on
   // llvm::Type*
@@ -305,10 +292,6 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
         outs() << "DBA: Function " << F.getName() << " arg " << arg_index
                << " type " << *argTy << "\n";
       }
-      // TODO(dneto): Handle POD args.
-      // TODO(dneto): Handle clustered POD args.
-      // TODO(dneto): Handle image args
-      // TODO(dneto): Handle sampler args
       // TODO(dneto): Handle local args.
       const auto arg_kind = clspv::GetArgKindForType(argTy);
 
@@ -316,85 +299,91 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
       KernelArgDiscriminant key{argTy, arg_index};
       auto where = discriminant_map_.find(key);
       int index;
+      unsigned addr_space = unsigned(-1);
       Type *resource_type = nullptr;
+      bool inserted = false;
       if (where == discriminant_map_.end()) {
         index = int(discriminant_map_.size());
 
         // Save the new unique index for this discriminant.
         discriminant_map_[key] = index;
-
-        // We will remap this kernel argument to a SPIR-V module-scope
-        // OpVariable, as follows:
-        //
-        // Create a %clspv.resource.var.<kind>.N function that returns
-        // the same kind of pointer that the OpVariable evaluates to.
-        // The first two arguments are the descriptor set and binding
-        // to use.
-        //
-        // For each call to a %clspv.resource.var.<kind>.N with a unique
-        // descriptor set and binding, the SPIRVProducer pass will:
-        // 1) Create a unique OpVariable
-        // 2) Map uses of the call to the function with the base pointer
-        // to use.
-        //   For a storage buffer it's the the elements in the runtime
-        // array in the module-scope storage buffer variable.
-        // So it's something that maps to:
-        //     OpAccessChain %ptr_to_elem %the-var %uint_0 %uint_0
-        //   For POD data, its something like this:
-        //     OpAccessChain %ptr_to_elem %the-var %uint_0
-        // 3) Generate no SPIR-V code for the call itself.
-
-        switch (arg_kind) {
-        case clspv::ArgKind::Buffer: {
-          // If original argument is:
-          //   Elem addrspace(1)*
-          // Then make a zero-length array to mimic a StorageBuffer struct
-          // whose first element is a RuntimeArray:
-          //
-          //   %clspv.resource.type.N = type { [0 x Elem] }
-
-          // Create the type only once.
-          auto *arr_type = ArrayType::get(argTy->getPointerElementType(), 0);
-          resource_type = StructType::create(
-              {arr_type},
-              std::string("clspv.resource.type.") + std::to_string(index));
-          break;
-        }
-        case clspv::ArgKind::Pod:
-          resource_type =
-              StructType::create({argTy}, std::string("clspv.resource.type.") +
-                                              std::to_string(index));
-          break;
-        case clspv::ArgKind::Sampler:
-        case clspv::ArgKind::ReadOnlyImage:
-        case clspv::ArgKind::WriteOnlyImage:
-          // Samplers and images map to their own types.
-          resource_type = argTy;
-          break;
-        default:
-          errs() << "Unhandled type " << *argTy << "\n";
-          llvm_unreachable("Allocation of descriptors: Unhandled type");
-        }
+        inserted = true;
       } else {
         index = where->second;
-        switch (arg_kind) {
-        case clspv::ArgKind::Buffer:
-        case clspv::ArgKind::Pod:
-          resource_type = M.getTypeByName(std::string("clspv.resource.type.") +
-                                          std::to_string(index));
-        default:
-          resource_type = argTy;
-          break;
-        }
-        assert(resource_type);
       }
 
+      // TODO(dneto): Describe opaque and Local cases.
+      // For pointer-to-global and POD arguments, we will remap this
+      // kernel argument to a SPIR-V module-scope OpVariable, as follows:
+      //
+      // Create a %clspv.resource.var.<kind>.N function that returns
+      // the same kind of pointer that the OpVariable evaluates to.
+      // The first two arguments are the descriptor set and binding
+      // to use.
+      //
+      // For each call to a %clspv.resource.var.<kind>.N with a unique
+      // descriptor set and binding, the SPIRVProducer pass will:
+      // 1) Create a unique OpVariable
+      // 2) Map uses of the call to the function with the base pointer
+      // to use.
+      //   For a storage buffer it's the the elements in the runtime
+      // array in the module-scope storage buffer variable.
+      // So it's something that maps to:
+      //     OpAccessChain %ptr_to_elem %the-var %uint_0 %uint_0
+      //   For POD data, its something like this:
+      //     OpAccessChain %ptr_to_elem %the-var %uint_0
+      // 3) Generate no SPIR-V code for the call itself.
+
+      switch (arg_kind) {
+      case clspv::ArgKind::Buffer: {
+        // If original argument is:
+        //   Elem addrspace(1)*
+        // Then make a zero-length array to mimic a StorageBuffer struct
+        // whose first element is a RuntimeArray:
+        //
+        //   %clspv.resource.type.N = type { [0 x Elem] }
+
+        // Create the type only once.
+        auto *arr_type = ArrayType::get(argTy->getPointerElementType(), 0);
+        const auto struct_name =
+            std::string("clspv.resource.type.") + std::to_string(index);
+        resource_type = inserted ? StructType::create({arr_type}, struct_name)
+                                 : M.getTypeByName(struct_name);
+        addr_space = clspv::AddressSpace::Global;
+        break;
+      }
+      case clspv::ArgKind::Pod: {
+        // If original argument is:
+        //   Elem %arg
+        // Then make a StorageBuffer struct whose element is pod-type:
+        //
+        //   %clspv.resource.type.N = type { Elem }
+        const auto struct_name =
+            std::string("clspv.resource.type.") + std::to_string(index);
+        resource_type = inserted ? StructType::create({argTy}, struct_name)
+                                 : M.getTypeByName(struct_name);
+        addr_space = clspv::AddressSpace::Global;
+        break;
+      }
+      case clspv::ArgKind::Sampler:
+      case clspv::ArgKind::ReadOnlyImage:
+      case clspv::ArgKind::WriteOnlyImage:
+        // We won't be translating the value here.  Keep the type the same.
+        // since calls using these values need to keep the same type.
+        resource_type = argTy->getPointerElementType();
+        addr_space = argTy->getPointerAddressSpace();
+        break;
+      default:
+        errs() << "Unhandled type " << *argTy << "\n";
+        llvm_unreachable("Allocation of descriptors: Unhandled type");
+      }
+
+      assert(resource_type);
       auto fn_name = std::string("clspv.resource.var.") + std::to_string(index);
       Function *var_fn = M.getFunction(fn_name);
       if (!var_fn) {
         // Make the function
-        PointerType *ptrTy =
-            PointerType::get(resource_type, clspv::AddressSpace::Global);
+        PointerType *ptrTy = PointerType::get(resource_type, addr_space);
         // The parameters are:
         //  descriptor set
         //  binding
@@ -431,8 +420,12 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
       case clspv::ArgKind::ReadOnlyImage:
       case clspv::ArgKind::WriteOnlyImage:
       case clspv::ArgKind::Sampler: {
-        // Replace with a load of the (virtual) variable.
-        replacement = Builder.CreateLoad(call);
+        // The call returns a pointer to an opaque type.  Eventually the SPIR-V
+        // will need to load the variable, so the natural thing would be to
+        // emit an LLVM load here.  But LLVM does not allow a load of an opaque
+        // type because it's unsized.  So keep the bare call here, and do
+        // the translation to a load in the SPIRVProducer pass.
+        replacement = call;
       } break;
       case clspv::ArgKind::Local:
         llvm_unreachable("local is unhandled");

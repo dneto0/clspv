@@ -2040,7 +2040,7 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
         // By convention, map it to a RuntimeArray.
 
         // Only generate the type once.
-        Type *EleTy = ArrTy->getElementType();
+        Type *EleTy = ArrTy->getArrayElementType();
         if (OpRuntimeTyMap.count(EleTy) == 0) {
           uint32_t OpTypeRuntimeArrayID = nextID;
           OpRuntimeTyMap[Ty] = nextID;
@@ -2128,8 +2128,8 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
 
         auto *ArrayInst = new SPIRVInstruction(spv::OpTypeArray, nextID++, Ops);
         SPIRVInstList.push_back(ArrayInst);
-        break;
       }
+      break;
     }
     case Type::VectorTyID: {
       // <4 x i8> is changed to i32.
@@ -2887,6 +2887,7 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
   //
   // Generate OpVariable and OpDecorate for kernel function with arguments.
   //
+#if 0
   if (F.getCallingConv() == CallingConv::SPIR_KERNEL) {
 
     // Find Insert Point for OpDecorate.
@@ -3069,6 +3070,7 @@ void SPIRVProducerPass::GenerateFuncPrologue(Function &F) {
       arg_index++;
     }
   }
+#endif
 
   //
   // Generate OPFunction.

@@ -22,6 +22,7 @@
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
+#include <llvm/IR/Verifier.h>
 #include <llvm/LinkAllPasses.h>
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/raw_ostream.h>
@@ -768,6 +769,7 @@ int main(const int argc, const char *const argv[]) {
   // Not clear this is the right spot.
   // TODO: move this after creation of module scope constants.
   pm.add(clspv::createAllocateDescriptorsPass(SamplerMapEntries));
+  pm.add(llvm::createVerifierPass());
   pm.add(clspv::createReplaceIndirectBufferAccessPass());
   // Replacing pointer bitcasts can leave some trivial GEPs
   // that are easy to remove.  Also replace GEPs of GEPS

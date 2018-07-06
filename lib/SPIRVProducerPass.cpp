@@ -63,6 +63,11 @@ using namespace mdconst;
 
 namespace {
 
+// These hacks exist to help transition code generation algorithms
+// without making huge noise in detailed test output.
+const bool Hack_generate_runtime_array_stride_early = true;
+const bool Hack_generate_pointer_to_elem_early = true;
+
 // The value of 1/pi.  This value is from MSDN
 // https://msdn.microsoft.com/en-us/library/4hwaceh6.aspx
 const double kOneOverPi = 0.318309886183790671538;
@@ -1397,7 +1402,7 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
         errs() << *type << "\n";
         llvm_unreachable("Global and POD arguments must map to structures!");
       }
-      {
+      if (Hack_generate_pointer_to_elem_early) {
         // Generate pointer-to-element before the runtime array.
         // This is a hack to make the generated code look more like old style
         // clspv output.
@@ -1440,8 +1445,10 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
     switch(type->getTypeID()) {
       case Type::ArrayTyID:
         work_list.push_back(type->getArrayElementType());
-        // Remember this array type for deferred decoration.
-        TypesNeedingArrayStride.insert(type);
+        if (!Hack_generate_runtime_array_stride_early) {
+          // Remember this array type for deferred decoration.
+          TypesNeedingArrayStride.insert(type);
+        }
         break;
       case Type::StructTyID:
         for (auto *elem_ty : cast<StructType>(type)->elements()) {
@@ -2077,28 +2084,28 @@ void SPIRVProducerPass::GenerateSPIRVTypes(LLVMContext& Context, const DataLayou
           SPIRVInstList.push_back(
               new SPIRVInstruction(spv::OpTypeRuntimeArray, nextID++, Ops));
 
-          // Array Stride will be applied later.
-#if 0
-          // Generate OpDecorate.
-          auto DecoInsertPoint = std::find_if(
-              SPIRVInstList.begin(), SPIRVInstList.end(),
-              [](SPIRVInstruction *Inst) -> bool {
-                return Inst->getOpcode() != spv::OpDecorate &&
-                       Inst->getOpcode() != spv::OpMemberDecorate &&
-                       Inst->getOpcode() != spv::OpExtInstImport;
-              });
+          if (Hack_generate_runtime_array_stride_early) {
+            // Generate OpDecorate.
+            auto DecoInsertPoint = std::find_if(
+                SPIRVInstList.begin(), SPIRVInstList.end(),
+                [](SPIRVInstruction *Inst) -> bool {
+                  return Inst->getOpcode() != spv::OpDecorate &&
+                         Inst->getOpcode() != spv::OpMemberDecorate &&
+                         Inst->getOpcode() != spv::OpExtInstImport;
+                });
 
-          // Ops[0] = Target ID
-          // Ops[1] = Decoration (ArrayStride)
-          // Ops[2] = Stride Number(Literal Number)
-          Ops.clear();
+            // Ops[0] = Target ID
+            // Ops[1] = Decoration (ArrayStride)
+            // Ops[2] = Stride Number(Literal Number)
+            Ops.clear();
 
-          Ops << MkId(OpTypeRuntimeArrayID) << MkNum(spv::DecorationArrayStride)
-              << MkNum(static_cast<uint32_t>(DL.getTypeAllocSize(EleTy)));
+            Ops << MkId(OpTypeRuntimeArrayID)
+                << MkNum(spv::DecorationArrayStride)
+                << MkNum(static_cast<uint32_t>(DL.getTypeAllocSize(EleTy)));
 
-          auto *DecoInst = new SPIRVInstruction(spv::OpDecorate, Ops);
-          SPIRVInstList.insert(DecoInsertPoint, DecoInst);
-#endif
+            auto *DecoInst = new SPIRVInstruction(spv::OpDecorate, Ops);
+            SPIRVInstList.insert(DecoInsertPoint, DecoInst);
+          }
         }
 
       } else {

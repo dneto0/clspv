@@ -298,6 +298,7 @@ struct SPIRVProducerPass final : public ModulePass {
   bool FindExtInst(Module &M);
   void FindTypePerGlobalVar(GlobalVariable &GV);
   void FindTypePerFunc(Function &F);
+  void FindTypesForSamplerMap(Module &M);
   void FindTypesForResourceVars(Module &M);
   // Inserts |Ty| and relevant sub-types into the |Types| member, indicating that
   // |Ty| and its subtypes will need a corresponding SPIR-V type.
@@ -543,20 +544,6 @@ bool SPIRVProducerPass::runOnModule(Module &module) {
   // Gather information from the LLVM IR that we require.
   GenerateLLVMIRInfo(module, DL);
 
-  // If we are using a sampler map, find the type of the sampler.
-  if (module.getFunction("clspv.sampler.var.literal") ||
-      0 < getSamplerMap().size()) {
-    auto SamplerStructTy = module.getTypeByName("opencl.sampler_t");
-    if (!SamplerStructTy) {
-      SamplerStructTy =
-          StructType::create(module.getContext(), "opencl.sampler_t");
-    }
-
-    SamplerTy = SamplerStructTy->getPointerTo(AddressSpace::UniformConstant);
-
-    FindType(SamplerTy);
-  }
-
   // Collect information on global variables too.
   for (GlobalVariable &GV : module.globals()) {
     // If the GV is one of our special __spirv_* variables, remove the
@@ -755,9 +742,10 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
     }
   }
 
+  FindTypesForSamplerMap(M);
   FindTypesForResourceVars(M);
 
-//#error "remove arg handling from this code"
+  //#error "remove arg handling from this code"
   // Map kernel functions to their ordinal number in the compilation unit.
   UniqueVector<Function*> KernelOrdinal;
 
@@ -841,14 +829,6 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
           }
         }
       }
-    }
-
-    if (M.getTypeByName("opencl.image2d_ro_t") ||
-        M.getTypeByName("opencl.image2d_wo_t") ||
-        M.getTypeByName("opencl.image3d_ro_t") ||
-        M.getTypeByName("opencl.image3d_wo_t")) {
-      // Assume Image type's sampled type is float type.
-      FindType(Type::getFloatTy(Context));
     }
 
     if (const MDNode *MD =
@@ -1385,10 +1365,37 @@ void SPIRVProducerPass::FindTypePerFunc(Function &F) {
   }
 }
 
+void SPIRVProducerPass::FindTypesForSamplerMap(Module &M) {
+  // If we are using a sampler map, find the type of the sampler.
+  if (M.getFunction("clspv.sampler.var.literal") ||
+      0 < getSamplerMap().size()) {
+    auto SamplerStructTy = M.getTypeByName("opencl.sampler_t");
+    if (!SamplerStructTy) {
+      SamplerStructTy = StructType::create(M.getContext(), "opencl.sampler_t");
+    }
+
+    SamplerTy = SamplerStructTy->getPointerTo(AddressSpace::UniformConstant);
+
+    FindType(SamplerTy);
+  }
+}
+
 void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
   // Record types so they are generated.
   TypesNeedingLayout.reset();
   StructTypesNeedingBlock.reset();
+
+  // To match older clspv codegen, generate the float type first if required
+  // for images.
+  for (auto &info : ResourceVarInfoList) {
+    if (info.arg_kind == clspv::ArgKind::ReadOnlyImage ||
+        info.arg_kind == clspv::ArgKind::WriteOnlyImage) {
+      // We need "float" for the sampled component type.
+      FindType(Type::getFloatTy(M.getContext()));
+      // We only need to find it once.
+      break;
+    }
+  }
 
   for (auto& info : ResourceVarInfoList) {
     Type* type = info.var_fn->getReturnType();
@@ -1431,9 +1438,6 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
       break;
     case clspv::ArgKind::ReadOnlyImage:
     case clspv::ArgKind::WriteOnlyImage:
-      // We need "float" for the sampled component type.
-      FindType(Type::getFloatTy(M.getContext()));
-      // Fall through
     case clspv::ArgKind::Sampler:
       // Sampler and image types map to the pointee type but
       // in the uniform constant address space.

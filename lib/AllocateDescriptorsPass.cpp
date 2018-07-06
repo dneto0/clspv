@@ -341,17 +341,16 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
         // Then make a zero-length array to mimic a StorageBuffer struct
         // whose first element is a RuntimeArray:
         //
-        //   %clspv.resource.type.N = type { [0 x Elem] }
+        //   { [0 x Elem] }
+        //
+        // Use unnamed struct types so we generate less SPIR-V code.
 
         // Create the type only once.
         auto *arr_type = ArrayType::get(argTy->getPointerElementType(), 0);
-        const auto struct_name =
-            std::string("clspv.resource.type.") + std::to_string(index);
-        resource_type = inserted ? StructType::create({arr_type}, struct_name)
-                                 : M.getTypeByName(struct_name);
-	// Preserve the address space in case the pointer is passed into a helper
-	// function: we don't want to change the type of the helper function
-	// parameter.
+        resource_type = StructType::get({arr_type});
+        // Preserve the address space in case the pointer is passed into a
+        // helper function: we don't want to change the type of the helper
+        // function parameter.
         addr_space = argTy->getPointerAddressSpace();
         break;
       }
@@ -360,11 +359,10 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
         //   Elem %arg
         // Then make a StorageBuffer struct whose element is pod-type:
         //
-        //   %clspv.resource.type.N = type { Elem }
-        const auto struct_name =
-            std::string("clspv.resource.type.") + std::to_string(index);
-        resource_type = inserted ? StructType::create({argTy}, struct_name)
-                                 : M.getTypeByName(struct_name);
+        //   { Elem }
+        //
+        // Use unnamed struct types so we generate less SPIR-V code.
+        resource_type = StructType::get({argTy});
         addr_space = clspv::AddressSpace::Global;
         break;
       }

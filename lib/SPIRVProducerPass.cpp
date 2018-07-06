@@ -2594,8 +2594,8 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
   SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
   ValueMapType &VMap = getValueMap();
 
+  // Generate variables.
   for (auto &info : ResourceVarInfoList) {
-    // Generate an OpVariable
     Type *type = info.var_fn->getReturnType();
     // Remap the address space for opaque types.
     switch (info.arg_kind) {
@@ -2639,17 +2639,22 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
         }
       }
     }
+  }
 
+  // Generate associated decorations.
+
+  // Find Insert Point for OpDecorate.
+  auto DecoInsertPoint =
+      std::find_if(SPIRVInstList.begin(), SPIRVInstList.end(),
+                   [](SPIRVInstruction *Inst) -> bool {
+                     return Inst->getOpcode() != spv::OpDecorate &&
+                            Inst->getOpcode() != spv::OpMemberDecorate &&
+                            Inst->getOpcode() != spv::OpExtInstImport;
+                   });
+
+  for (auto &info : ResourceVarInfoList) {
+    SPIRVOperandList Ops;
     // Decorate with DescriptorSet and Binding.
-    // Find Insert Point for OpDecorate.
-    auto DecoInsertPoint =
-        std::find_if(SPIRVInstList.begin(), SPIRVInstList.end(),
-                     [](SPIRVInstruction *Inst) -> bool {
-                       return Inst->getOpcode() != spv::OpDecorate &&
-                              Inst->getOpcode() != spv::OpMemberDecorate &&
-                              Inst->getOpcode() != spv::OpExtInstImport;
-                     });
-
     Ops.clear();
     Ops << MkId(info.var_id) << MkNum(spv::DecorationDescriptorSet)
         << MkNum(info.descriptor_set);
@@ -2661,6 +2666,33 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
         << MkNum(info.binding);
     SPIRVInstList.insert(DecoInsertPoint,
                          new SPIRVInstruction(spv::OpDecorate, Ops));
+
+    // Generate NonWritable and NonReadable
+    switch (info.arg_kind) {
+    case clspv::ArgKind::Buffer:
+      if (info.var_fn->getReturnType()->getPointerAddressSpace() ==
+          clspv::AddressSpace::Constant) {
+        Ops.clear();
+        Ops << MkId(info.var_id) << MkNum(spv::DecorationNonWritable);
+        SPIRVInstList.insert(DecoInsertPoint,
+                             new SPIRVInstruction(spv::OpDecorate, Ops));
+      }
+      break;
+    case clspv::ArgKind::ReadOnlyImage:
+      Ops.clear();
+      Ops << MkId(info.var_id) << MkNum(spv::DecorationNonWritable);
+      SPIRVInstList.insert(DecoInsertPoint,
+                           new SPIRVInstruction(spv::OpDecorate, Ops));
+      break;
+    case clspv::ArgKind::WriteOnlyImage:
+      Ops.clear();
+      Ops << MkId(info.var_id) << MkNum(spv::DecorationNonReadable);
+      SPIRVInstList.insert(DecoInsertPoint,
+                           new SPIRVInstruction(spv::OpDecorate, Ops));
+      break;
+    default:
+      break;
+    }
   }
 }
 

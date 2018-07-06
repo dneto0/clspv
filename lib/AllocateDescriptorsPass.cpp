@@ -349,7 +349,10 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
             std::string("clspv.resource.type.") + std::to_string(index);
         resource_type = inserted ? StructType::create({arr_type}, struct_name)
                                  : M.getTypeByName(struct_name);
-        addr_space = clspv::AddressSpace::Global;
+	// Preserve the address space in case the pointer is passed into a helper
+	// function: we don't want to change the type of the helper function
+	// parameter.
+        addr_space = argTy->getPointerAddressSpace();
         break;
       }
       case clspv::ArgKind::Pod: {

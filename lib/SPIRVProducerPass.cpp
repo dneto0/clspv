@@ -1397,6 +1397,16 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
         errs() << *type << "\n";
         llvm_unreachable("Global and POD arguments must map to structures!");
       }
+      {
+        // Generate pointer-to-element before the runtime array.
+        // This is a hack to make the generated code look more like old style
+        // clspv output.
+        Type *ptrElemTy = PointerType::get(type->getPointerElementType()
+                                               ->getStructElementType(0)
+                                               ->getArrayElementType(),
+                                           type->getPointerAddressSpace());
+        FindType(ptrElemTy);
+      }
       break;
     case clspv::ArgKind::ReadOnlyImage:
     case clspv::ArgKind::WriteOnlyImage:

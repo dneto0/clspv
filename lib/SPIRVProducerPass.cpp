@@ -1395,12 +1395,11 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
 
     switch (info.arg_kind) {
     case clspv::ArgKind::Buffer:
-    case clspv::ArgKind::Pod:
       if (auto *sty = dyn_cast<StructType>(type->getPointerElementType())) {
         StructTypesNeedingBlock.insert(sty);
       } else {
         errs() << *type << "\n";
-        llvm_unreachable("Global and POD arguments must map to structures!");
+        llvm_unreachable("Buffer arguments must map to structures!");
       }
       if (Hack_generate_pointer_to_elem_early) {
         // Generate pointer-to-element before the runtime array.
@@ -1410,6 +1409,23 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
                                                ->getStructElementType(0)
                                                ->getArrayElementType(),
                                            type->getPointerAddressSpace());
+        FindType(ptrElemTy);
+      }
+      break;
+    case clspv::ArgKind::Pod:
+      if (auto *sty = dyn_cast<StructType>(type->getPointerElementType())) {
+        StructTypesNeedingBlock.insert(sty);
+      } else {
+        errs() << *type << "\n";
+        llvm_unreachable("POD arguments must map to structures!");
+      }
+      if (Hack_generate_pointer_to_elem_early) {
+        // Generate pointer-to-element before the runtime array.
+        // This is a hack to make the generated code look more like old style
+        // clspv output.
+        Type *ptrElemTy = PointerType::get(
+            type->getPointerElementType()->getStructElementType(0),
+            type->getPointerAddressSpace());
         FindType(ptrElemTy);
       }
       break;

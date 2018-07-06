@@ -595,13 +595,14 @@ bool SPIRVProducerPass::runOnModule(Module &module) {
   if (0 < getSamplerMap().size()) {
     GenerateSamplers(module);
   }
-  GenerateResourceVars(module);
 
   // Generate SPIRV variables.
   for (GlobalVariable &GV : module.globals()) {
     GenerateGlobalVar(GV);
   }
   GenerateWorkgroupVars();
+
+  GenerateResourceVars(module);
 
   // Generate SPIRV instructions for each function.
   for (Function &F : module) {

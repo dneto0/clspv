@@ -295,6 +295,14 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
       // TODO(dneto): Handle local args.
       const auto arg_kind = clspv::GetArgKindForType(argTy);
 
+      // Pointer-to-local arguments don't become resource variables.
+      if (arg_kind == clspv::ArgKind::Local) {
+        if (ShowDescriptors) {
+          errs() << "DBA: skip pointer-to-local\n\n";
+        }
+        continue;
+      }
+
       // Put it in if it isn't there.
       KernelArgDiscriminant key{argTy, arg_index};
       auto where = discriminant_map_.find(key);

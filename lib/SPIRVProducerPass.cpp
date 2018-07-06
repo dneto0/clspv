@@ -605,9 +605,9 @@ bool SPIRVProducerPass::runOnModule(Module &module) {
   for (GlobalVariable &GV : module.globals()) {
     GenerateGlobalVar(GV);
   }
-  GenerateWorkgroupVars();
 
   GenerateResourceVars(module);
+  GenerateWorkgroupVars();
 
   // Generate SPIRV instructions for each function.
   for (Function &F : module) {

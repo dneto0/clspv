@@ -320,6 +320,7 @@ struct SPIRVProducerPass final : public ModulePass {
   void GenerateSamplers(Module &M);
   // Generate OpVariables for %clspv.resource.var.* calls.
   void GenerateResourceVars(Module &M);
+  void GenerateNonSamplerMapDescriptorMapInfo(Module &M);
   void GenerateFuncPrologue(Function &F);
   void GenerateFuncBody(Function &F);
   void GenerateInstForArg(Function &F);
@@ -2698,6 +2699,10 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
       break;
     }
   }
+}
+
+void SPIRVProducerPass::GenerateNonSamplerMapDescriptorMapInfo(Module &M) {
+
 }
 
 void SPIRVProducerPass::GenerateGlobalVar(GlobalVariable &GV) {

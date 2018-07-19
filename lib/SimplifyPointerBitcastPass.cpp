@@ -260,8 +260,15 @@ bool SimplifyPointerBitcastPass::runOnGEPFromGEP(Module &M) const {
     SmallVector<Value *, 8> Idxs;
 
     Value *SrcLastIdxOp = OtherGEP->getOperand(OtherGEP->getNumOperands() - 1);
+
     Value *GEPIdxOp = GEP->getOperand(1);
-    Value *MergedIdx = Builder.CreateAdd(SrcLastIdxOp, GEPIdxOp);
+    Value *MergedIdx = GEPIdxOp;
+    // Add the indices together, if the last one from before is not zero.
+    if (auto *constant = dyn_cast<ConstantInt>(SrcLastIdxOp)) {
+      if (!constant->isZero()) {
+        MergedIdx = Builder.CreateAdd(SrcLastIdxOp, GEPIdxOp);
+      }
+    }
 
     Idxs.append(OtherGEP->op_begin() + 1, OtherGEP->op_end() - 1);
     Idxs.push_back(MergedIdx);

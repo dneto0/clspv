@@ -71,8 +71,8 @@ kernel void foo(global float4* A, local float4* B, uint n) {
 // CHECK: [[_1:%[0-9a-zA-Z_]+]] = OpVariable [[__ptr_Workgroup__arr_v4float_2]] Workgroup
 // CHECK: [[_35]] = OpFunction [[_void]] None [[_18]]
 // CHECK: [[_36:%[0-9a-zA-Z_]+]] = OpLabel
-// CHECK: [[_37:%[0-9a-zA-Z_]+]] = OpAccessChain [[__ptr_StorageBuffer_v4float]] [[_33]] [[_uint_0]] [[_uint_0]]
 // CHECK: [[_5:%[0-9a-zA-Z_]+]] = OpAccessChain [[__ptr_Workgroup_v4float]] [[_1]] [[_uint_0]]
+// CHECK: [[_37:%[0-9a-zA-Z_]+]] = OpAccessChain [[__ptr_StorageBuffer_v4float]] [[_33]] [[_uint_0]] [[_uint_0]]
 // CHECK: [[_38:%[0-9a-zA-Z_]+]] = OpAccessChain [[__ptr_StorageBuffer_uint]] [[_34]] [[_uint_0]]
 // CHECK: [[_39:%[0-9a-zA-Z_]+]] = OpLoad [[_uint]] [[_38]]
 // CHECK: [[_40:%[0-9a-zA-Z_]+]] = OpShiftRightLogical [[_uint]] [[_39]] [[_uint_1]]

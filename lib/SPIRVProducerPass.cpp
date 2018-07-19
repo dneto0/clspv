@@ -745,6 +745,10 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
 
   FindTypesForSamplerMap(M);
   FindTypesForResourceVars(M);
+  // Many of the tests want to see the 32-bit int type before seeing the entry
+  // point function type.  This is not necessary, but makes it easier to pass
+  // the existing test base.
+  FindType(Type::getInt32Ty(Context));
 
   //#error "remove arg handling from this code"
   // Map kernel functions to their ordinal number in the compilation unit.

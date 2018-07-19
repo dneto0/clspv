@@ -54,9 +54,9 @@ kernel void foo(global float4* A, global uint2* B, uint n) {
 // CHECK: [[__runtimearr_v2uint]] = OpTypeRuntimeArray [[_v2uint]]
 // CHECK: [[__struct_12]] = OpTypeStruct [[__runtimearr_v2uint]]
 // CHECK: [[__ptr_StorageBuffer__struct_12:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[__struct_12]]
+// CHECK: [[__ptr_StorageBuffer_uint:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[_uint]]
 // CHECK: [[__struct_14]] = OpTypeStruct [[_uint]]
 // CHECK: [[__ptr_StorageBuffer__struct_14:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[__struct_14]]
-// CHECK: [[__ptr_StorageBuffer_uint:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[_uint]]
 // CHECK: [[_void:%[0-9a-zA-Z_]+]] = OpTypeVoid
 // CHECK: [[_18:%[0-9a-zA-Z_]+]] = OpTypeFunction [[_void]]
 // CHECK: [[_v2float:%[0-9a-zA-Z_]+]] = OpTypeVector [[_float]] 2

@@ -37,24 +37,24 @@
 // CHECK: OpDecorate [[_26:%[0-9a-zA-Z_]+]] Binding 1
 // CHECK: OpDecorate [[_27:%[0-9a-zA-Z_]+]] DescriptorSet 0
 // CHECK: OpDecorate [[_27:%[0-9a-zA-Z_]+]] Binding 2
-// CHECK: [[_uint:%[0-9a-zA-Z_]+]] = OpTypeInt 32 0
-// CHECK: [[_v4uint:%[0-9a-zA-Z_]+]] = OpTypeVector [[_uint:%[0-9a-zA-Z_]+]] 4
-// CHECK: [[__ptr_StorageBuffer_v4uint:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[_v4uint:%[0-9a-zA-Z_]+]]
-// CHECK: [[__runtimearr_v4uint:%[0-9a-zA-Z_]+]] = OpTypeRuntimeArray [[_v4uint:%[0-9a-zA-Z_]+]]
-// CHECK: [[__struct_5:%[0-9a-zA-Z_]+]] = OpTypeStruct [[__runtimearr_v4uint:%[0-9a-zA-Z_]+]]
-// CHECK: [[__ptr_StorageBuffer__struct_5:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[__struct_5:%[0-9a-zA-Z_]+]]
-// CHECK: [[__ptr_StorageBuffer_uint:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[_uint:%[0-9a-zA-Z_]+]]
-// CHECK: [[__runtimearr_uint:%[0-9a-zA-Z_]+]] = OpTypeRuntimeArray [[_uint:%[0-9a-zA-Z_]+]]
-// CHECK: [[__struct_9:%[0-9a-zA-Z_]+]] = OpTypeStruct [[__runtimearr_uint:%[0-9a-zA-Z_]+]]
-// CHECK: [[__ptr_StorageBuffer__struct_9:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[__struct_9:%[0-9a-zA-Z_]+]]
-// CHECK: [[_void:%[0-9a-zA-Z_]+]] = OpTypeVoid
-// CHECK: [[_12:%[0-9a-zA-Z_]+]] = OpTypeFunction [[_void:%[0-9a-zA-Z_]+]]
-// CHECK: [[_v3uint:%[0-9a-zA-Z_]+]] = OpTypeVector [[_uint:%[0-9a-zA-Z_]+]] 3
-// CHECK: [[__ptr_Input_v3uint:%[0-9a-zA-Z_]+]] = OpTypePointer Input [[_v3uint:%[0-9a-zA-Z_]+]]
-// CHECK: [[__ptr_Input_uint:%[0-9a-zA-Z_]+]] = OpTypePointer Input [[_uint:%[0-9a-zA-Z_]+]]
-// CHECK: [[__ptr_Private_v3uint:%[0-9a-zA-Z_]+]] = OpTypePointer Private [[_v3uint:%[0-9a-zA-Z_]+]]
-// CHECK: [[_uint_0:%[0-9a-zA-Z_]+]] = OpConstant [[_uint:%[0-9a-zA-Z_]+]] 0
-// CHECK: [[_uint_42:%[0-9a-zA-Z_]+]] = OpConstant [[_uint:%[0-9a-zA-Z_]+]] 42
+// CHECK-DAG: [[_uint:%[0-9a-zA-Z_]+]] = OpTypeInt 32 0
+// CHECK-DAG: [[_v4uint:%[0-9a-zA-Z_]+]] = OpTypeVector [[_uint:%[0-9a-zA-Z_]+]] 4
+// CHECK-DAG: [[__ptr_StorageBuffer_v4uint:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[_v4uint:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[__runtimearr_v4uint:%[0-9a-zA-Z_]+]] = OpTypeRuntimeArray [[_v4uint:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[__struct_5:%[0-9a-zA-Z_]+]] = OpTypeStruct [[__runtimearr_v4uint:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[__ptr_StorageBuffer__struct_5:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[__struct_5:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[__ptr_StorageBuffer_uint:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[_uint:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[__runtimearr_uint:%[0-9a-zA-Z_]+]] = OpTypeRuntimeArray [[_uint:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[__struct_9:%[0-9a-zA-Z_]+]] = OpTypeStruct [[__runtimearr_uint:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[__ptr_StorageBuffer__struct_9:%[0-9a-zA-Z_]+]] = OpTypePointer StorageBuffer [[__struct_9:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[_void:%[0-9a-zA-Z_]+]] = OpTypeVoid
+// CHECK-DAG: [[_12:%[0-9a-zA-Z_]+]] = OpTypeFunction [[_void:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[_v3uint:%[0-9a-zA-Z_]+]] = OpTypeVector [[_uint:%[0-9a-zA-Z_]+]] 3
+// CHECK-DAG: [[__ptr_Input_v3uint:%[0-9a-zA-Z_]+]] = OpTypePointer Input [[_v3uint:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[__ptr_Input_uint:%[0-9a-zA-Z_]+]] = OpTypePointer Input [[_uint:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[__ptr_Private_v3uint:%[0-9a-zA-Z_]+]] = OpTypePointer Private [[_v3uint:%[0-9a-zA-Z_]+]]
+// CHECK-DAG: [[_uint_0:%[0-9a-zA-Z_]+]] = OpConstant [[_uint:%[0-9a-zA-Z_]+]] 0
+// CHECK-DAG: [[_uint_42:%[0-9a-zA-Z_]+]] = OpConstant [[_uint:%[0-9a-zA-Z_]+]] 42
 // CHECK: [[_gl_GlobalInvocationID:%[0-9a-zA-Z_]+]] = OpVariable [[__ptr_Input_v3uint:%[0-9a-zA-Z_]+]] Input
 // CHECK: [[_20:%[0-9a-zA-Z_]+]] = OpSpecConstant [[_uint:%[0-9a-zA-Z_]+]] 1
 // CHECK: [[_21:%[0-9a-zA-Z_]+]] = OpSpecConstant [[_uint:%[0-9a-zA-Z_]+]] 1

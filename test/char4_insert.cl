@@ -12,10 +12,10 @@ kernel void foo(global uchar4* A, int n) {
 // RUN: spirv-val --target-env vulkan1.0 %t.spv
 
 
-// CHECK: [[uint:%[_a-zA-Z0-9]+]] = OpTypeInt 32 0
-// CHECK: [[uint255:%[_a-zA-Z0-9]+]] = OpConstant [[uint]] 255
-// CHECK: [[uint3mask:%[_a-zA-Z0-9]+]] = OpConstant [[uint]] 16908292
-// CHECK: [[uint16:%[_a-zA-Z0-9]+]] = OpConstant [[uint]] 16
+// CHECK-DAG: [[uint:%[_a-zA-Z0-9]+]] = OpTypeInt 32 0
+// CHECK-DAG: [[uint255:%[_a-zA-Z0-9]+]] = OpConstant [[uint]] 255
+// CHECK-DAG: [[uint3mask:%[_a-zA-Z0-9]+]] = OpConstant [[uint]] 16908292
+// CHECK-DAG: [[uint16:%[_a-zA-Z0-9]+]] = OpConstant [[uint]] 16
 
 
 // CHECK: [[load:%[_a-zA-Z0-9]+]] = OpLoad [[uint]] {{%[_0-9a-zA-Z]+}}

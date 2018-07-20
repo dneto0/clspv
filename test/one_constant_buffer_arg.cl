@@ -33,15 +33,15 @@ void kernel __attribute__((reqd_work_group_size(1, 1, 1))) foo(constant uint* a,
 // CHECK: OpDecorate [[_10]] NonWritable
 // CHECK: OpDecorate [[_11:%[a-zA-Z0-9_]+]] DescriptorSet 0
 // CHECK: OpDecorate [[_11]] Binding 1
-// CHECK: [[_uint:%[a-zA-Z0-9_]+]] = OpTypeInt 32 0
-// CHECK: [[__ptr_StorageBuffer_uint:%[a-zA-Z0-9_]+]] = OpTypePointer StorageBuffer [[_uint]]
-// CHECK: [[__runtimearr_uint]] = OpTypeRuntimeArray [[_uint]]
-// CHECK: [[__struct_4]] = OpTypeStruct [[__runtimearr_uint]]
-// CHECK: [[__ptr_StorageBuffer__struct_4:%[a-zA-Z0-9_]+]] = OpTypePointer StorageBuffer [[__struct_4]]
-// CHECK: [[_void:%[a-zA-Z0-9_]+]] = OpTypeVoid
-// CHECK: [[_7:%[a-zA-Z0-9_]+]] = OpTypeFunction [[_void]]
-// CHECK: [[__runtimearr_uint_0]] = OpTypeRuntimeArray [[_uint]]
-// CHECK: [[_uint_0:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 0
+// CHECK-DAG: [[_uint:%[a-zA-Z0-9_]+]] = OpTypeInt 32 0
+// CHECK-DAG: [[__ptr_StorageBuffer_uint:%[a-zA-Z0-9_]+]] = OpTypePointer StorageBuffer [[_uint]]
+// CHECK-DAG: [[__runtimearr_uint]] = OpTypeRuntimeArray [[_uint]]
+// CHECK-DAG: [[__struct_4]] = OpTypeStruct [[__runtimearr_uint]]
+// CHECK-DAG: [[__ptr_StorageBuffer__struct_4:%[a-zA-Z0-9_]+]] = OpTypePointer StorageBuffer [[__struct_4]]
+// CHECK-DAG: [[_void:%[a-zA-Z0-9_]+]] = OpTypeVoid
+// CHECK-DAG: [[_7:%[a-zA-Z0-9_]+]] = OpTypeFunction [[_void]]
+// CHECK-DAG: [[__runtimearr_uint_0]] = OpTypeRuntimeArray [[_uint]]
+// CHECK-DAG: [[_uint_0:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 0
 // CHECK: [[_10]] = OpVariable [[__ptr_StorageBuffer__struct_4]] StorageBuffer
 // CHECK: [[_11]] = OpVariable [[__ptr_StorageBuffer__struct_4]] StorageBuffer
 // CHECK: [[_12]] = OpFunction [[_void]] None [[_7]]

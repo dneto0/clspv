@@ -29,21 +29,21 @@
 // CHECK: OpDecorate %[[ARG2_ID:[a-zA-Z0-9_]*]] DescriptorSet 0
 // CHECK: OpDecorate %[[ARG2_ID]] Binding 2
 
-// CHECK: %[[INT_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeInt 32 0
-// CHECK: %[[INT_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[INT_TYPE_ID]]
-// CHECK: %[[DYNAMIC_ARRAY_TYPE_ID]] = OpTypeRuntimeArray %[[INT_TYPE_ID]]
-// CHECK: %[[STRUCT_TYPE_ID]] = OpTypeStruct %[[DYNAMIC_ARRAY_TYPE_ID]]
-// CHECK: %[[STRUCT_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[STRUCT_TYPE_ID]]
-// CHECK: %[[INT_STRUCT_TYPE_ID]] = OpTypeStruct %[[INT_TYPE_ID]]
-// CHECK: %[[POINTER_INT_STRUCT_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[INT_STRUCT_TYPE_ID]]
-// CHECK: %[[VOID_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeVoid
-// CHECK: %[[FOO_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeFunction %[[VOID_TYPE_ID]]
-// CHECK: %[[BOOL_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeBool
+// CHECK-DAG: %[[INT_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeInt 32 0
+// CHECK-DAG: %[[INT_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[INT_TYPE_ID]]
+// CHECK-DAG: %[[DYNAMIC_ARRAY_TYPE_ID]] = OpTypeRuntimeArray %[[INT_TYPE_ID]]
+// CHECK-DAG: %[[STRUCT_TYPE_ID]] = OpTypeStruct %[[DYNAMIC_ARRAY_TYPE_ID]]
+// CHECK-DAG: %[[STRUCT_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[STRUCT_TYPE_ID]]
+// CHECK-DAG: %[[INT_STRUCT_TYPE_ID]] = OpTypeStruct %[[INT_TYPE_ID]]
+// CHECK-DAG: %[[POINTER_INT_STRUCT_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[INT_STRUCT_TYPE_ID]]
+// CHECK-DAG: %[[VOID_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeVoid
+// CHECK-DAG: %[[FOO_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeFunction %[[VOID_TYPE_ID]]
+// CHECK-DAG: %[[BOOL_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeBool
 
-// CHECK: %[[CONSTANT_0_ID:[a-zA-Z0-9_]*]] = OpConstant %[[INT_TYPE_ID]] 0
-// CHECK: %[[CONSTANT_100_ID:[a-zA-Z0-9_]*]] = OpConstant %[[INT_TYPE_ID]] 100
-// CHECK: %[[CONSTANT_50_ID:[a-zA-Z0-9_]*]] = OpConstant %[[INT_TYPE_ID]] 50
-// CHECK: %[[CONSTANT_1_ID:[a-zA-Z0-9_]*]] = OpConstant %[[INT_TYPE_ID]] 1
+// CHECK-DAG: %[[CONSTANT_0_ID:[a-zA-Z0-9_]*]] = OpConstant %[[INT_TYPE_ID]] 0
+// CHECK-DAG: %[[CONSTANT_100_ID:[a-zA-Z0-9_]*]] = OpConstant %[[INT_TYPE_ID]] 100
+// CHECK-DAG: %[[CONSTANT_50_ID:[a-zA-Z0-9_]*]] = OpConstant %[[INT_TYPE_ID]] 50
+// CHECK-DAG: %[[CONSTANT_1_ID:[a-zA-Z0-9_]*]] = OpConstant %[[INT_TYPE_ID]] 1
 
 // CHECK: %[[ARG0_ID]] = OpVariable %[[STRUCT_POINTER_TYPE_ID]] StorageBuffer
 // CHECK: %[[ARG1_ID]] = OpVariable %[[POINTER_INT_STRUCT_TYPE_ID]] StorageBuffer

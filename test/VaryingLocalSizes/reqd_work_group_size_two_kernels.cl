@@ -43,23 +43,23 @@ void kernel __attribute__((reqd_work_group_size(42, 13, 5))) bar(global uint* a)
 // CHECK: OpDecorate [[_gl_WorkGroupSize:%[a-zA-Z0-9_]+]] BuiltIn WorkgroupSize
 // CHECK: OpDecorate [[_19:%[a-zA-Z0-9_]+]] DescriptorSet 0
 // CHECK: OpDecorate [[_19]] Binding 0
-// CHECK: [[_uint:%[a-zA-Z0-9_]+]] = OpTypeInt 32 0
-// CHECK: [[__ptr_StorageBuffer_uint:%[a-zA-Z0-9_]+]] = OpTypePointer StorageBuffer [[_uint]]
-// CHECK: [[__runtimearr_uint]] = OpTypeRuntimeArray [[_uint]]
-// CHECK: [[__struct_4]] = OpTypeStruct [[__runtimearr_uint]]
-// CHECK: [[__ptr_StorageBuffer__struct_4:%[a-zA-Z0-9_]+]] = OpTypePointer StorageBuffer [[__struct_4]]
-// CHECK: [[_void:%[a-zA-Z0-9_]+]] = OpTypeVoid
-// CHECK: [[_7:%[a-zA-Z0-9_]+]] = OpTypeFunction [[_void]]
-// CHECK: [[_v3uint:%[a-zA-Z0-9_]+]] = OpTypeVector [[_uint]] 3
-// CHECK: [[__ptr_Private_v3uint:%[a-zA-Z0-9_]+]] = OpTypePointer Private [[_v3uint]]
-// CHECK: [[_uint_42:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 42
-// CHECK: [[_uint_13:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 13
-// CHECK: [[_uint_5:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 5
-// CHECK: [[_uint_0:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 0
-// CHECK: [[_uint_1:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 1
-// CHECK: [[_uint_2:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 2
-// CHECK: [[_uint_3:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 3
-// CHECK: [[_gl_WorkGroupSize]] = OpConstantComposite [[_v3uint]] [[_uint_42]] [[_uint_13]] [[_uint_5]]
+// CHECK-DAG: [[_uint:%[a-zA-Z0-9_]+]] = OpTypeInt 32 0
+// CHECK-DAG: [[__ptr_StorageBuffer_uint:%[a-zA-Z0-9_]+]] = OpTypePointer StorageBuffer [[_uint]]
+// CHECK-DAG: [[__runtimearr_uint]] = OpTypeRuntimeArray [[_uint]]
+// CHECK-DAG: [[__struct_4]] = OpTypeStruct [[__runtimearr_uint]]
+// CHECK-DAG: [[__ptr_StorageBuffer__struct_4:%[a-zA-Z0-9_]+]] = OpTypePointer StorageBuffer [[__struct_4]]
+// CHECK-DAG: [[_void:%[a-zA-Z0-9_]+]] = OpTypeVoid
+// CHECK-DAG: [[_7:%[a-zA-Z0-9_]+]] = OpTypeFunction [[_void]]
+// CHECK-DAG: [[_v3uint:%[a-zA-Z0-9_]+]] = OpTypeVector [[_uint]] 3
+// CHECK-DAG: [[__ptr_Private_v3uint:%[a-zA-Z0-9_]+]] = OpTypePointer Private [[_v3uint]]
+// CHECK-DAG: [[_uint_42:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 42
+// CHECK-DAG: [[_uint_13:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 13
+// CHECK-DAG: [[_uint_5:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 5
+// CHECK-DAG: [[_uint_0:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 0
+// CHECK-DAG: [[_uint_1:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 1
+// CHECK-DAG: [[_uint_2:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 2
+// CHECK-DAG: [[_uint_3:%[a-zA-Z0-9_]+]] = OpConstant [[_uint]] 3
+// CHECK-DAG: [[_gl_WorkGroupSize]] = OpConstantComposite [[_v3uint]] [[_uint_42]] [[_uint_13]] [[_uint_5]]
 // CHECK: [[_18:%[a-zA-Z0-9_]+]] = OpVariable [[__ptr_Private_v3uint]] Private [[_gl_WorkGroupSize]]
 // CHECK: [[_19]] = OpVariable [[__ptr_StorageBuffer__struct_4]] StorageBuffer
 // CHECK: [[_20]] = OpFunction [[_void]] None [[_7]]

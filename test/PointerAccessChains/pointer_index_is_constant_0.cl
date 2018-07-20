@@ -29,31 +29,31 @@
 // CHECK: OpDecorate %[[ARG1_ID:[a-zA-Z0-9_]*]] DescriptorSet 0
 // CHECK: OpDecorate %[[ARG1_ID]] Binding 1
 
-// CHECK: %[[FLOAT_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeFloat 32
-// CHECK: %[[FLOAT_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[FLOAT_TYPE_ID]]
-// CHECK: %[[ARG0_DYNAMIC_ARRAY_TYPE_ID]] = OpTypeRuntimeArray %[[FLOAT_TYPE_ID]]
-// CHECK: %[[ARG0_STRUCT_TYPE_ID]] = OpTypeStruct %[[ARG0_DYNAMIC_ARRAY_TYPE_ID]]
-// CHECK: %[[ARG0_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[ARG0_STRUCT_TYPE_ID]]
-// CHECK: %[[UINT_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeInt 32 0
-// CHECK: %[[CONSTANT_128_ID:[a-zA-Z0-9_]*]] = OpConstant %[[UINT_TYPE_ID]] 128
-// CHECK: %[[CONSTANT_ARRAY_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeArray %[[FLOAT_TYPE_ID]] %[[CONSTANT_128_ID]]
-// CHECK: %[[THING_TYPE_ID]] = OpTypeStruct %[[CONSTANT_ARRAY_TYPE_ID]]
-// CHECK: %[[THING_GLOBAL_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[THING_TYPE_ID]]
-// CHECK: %[[ARG1_DYNAMIC_ARRAY_TYPE_ID]] = OpTypeRuntimeArray %[[THING_TYPE_ID]]
-// CHECK: %[[ARG1_STRUCT_TYPE_ID]] = OpTypeStruct %[[ARG1_DYNAMIC_ARRAY_TYPE_ID]]
-// CHECK: %[[ARG1_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[ARG1_STRUCT_TYPE_ID]]
+// CHECK-DAG: %[[FLOAT_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeFloat 32
+// CHECK-DAG: %[[FLOAT_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[FLOAT_TYPE_ID]]
+// CHECK-DAG: %[[ARG0_DYNAMIC_ARRAY_TYPE_ID]] = OpTypeRuntimeArray %[[FLOAT_TYPE_ID]]
+// CHECK-DAG: %[[ARG0_STRUCT_TYPE_ID]] = OpTypeStruct %[[ARG0_DYNAMIC_ARRAY_TYPE_ID]]
+// CHECK-DAG: %[[ARG0_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[ARG0_STRUCT_TYPE_ID]]
+// CHECK-DAG: %[[UINT_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeInt 32 0
+// CHECK-DAG: %[[CONSTANT_128_ID:[a-zA-Z0-9_]*]] = OpConstant %[[UINT_TYPE_ID]] 128
+// CHECK-DAG: %[[CONSTANT_ARRAY_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeArray %[[FLOAT_TYPE_ID]] %[[CONSTANT_128_ID]]
+// CHECK-DAG: %[[THING_TYPE_ID]] = OpTypeStruct %[[CONSTANT_ARRAY_TYPE_ID]]
+// CHECK-DAG: %[[THING_GLOBAL_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[THING_TYPE_ID]]
+// CHECK-DAG: %[[ARG1_DYNAMIC_ARRAY_TYPE_ID]] = OpTypeRuntimeArray %[[THING_TYPE_ID]]
+// CHECK-DAG: %[[ARG1_STRUCT_TYPE_ID]] = OpTypeStruct %[[ARG1_DYNAMIC_ARRAY_TYPE_ID]]
+// CHECK-DAG: %[[ARG1_POINTER_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypePointer StorageBuffer %[[ARG1_STRUCT_TYPE_ID]]
 
 struct Thing
 {
   float a[128];
 };
 
-// CHECK: %[[VOID_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeVoid
-// CHECK: %[[FOO_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeFunction %[[VOID_TYPE_ID]]
-// CHECK: %[[BAR_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeFunction %[[FLOAT_TYPE_ID]] %[[THING_GLOBAL_POINTER_TYPE_ID]]
+// CHECK-DAG: %[[VOID_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeVoid
+// CHECK-DAG: %[[FOO_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeFunction %[[VOID_TYPE_ID]]
+// CHECK-DAG: %[[BAR_TYPE_ID:[a-zA-Z0-9_]*]] = OpTypeFunction %[[FLOAT_TYPE_ID]] %[[THING_GLOBAL_POINTER_TYPE_ID]]
 
-// CHECK: %[[CONSTANT_0_ID:[a-zA-Z0-9_]*]] = OpConstant %[[UINT_TYPE_ID]] 0
-// CHECK: %[[CONSTANT_5_ID:[a-zA-Z0-9_]*]] = OpConstant %[[UINT_TYPE_ID]] 5
+// CHECK-DAG: %[[CONSTANT_0_ID:[a-zA-Z0-9_]*]] = OpConstant %[[UINT_TYPE_ID]] 0
+// CHECK-DAG: %[[CONSTANT_5_ID:[a-zA-Z0-9_]*]] = OpConstant %[[UINT_TYPE_ID]] 5
 
 // CHECK: %[[ARG0_ID]] = OpVariable %[[ARG0_POINTER_TYPE_ID]] StorageBuffer
 // CHECK: %[[ARG1_ID]] = OpVariable %[[ARG1_POINTER_TYPE_ID]] StorageBuffer

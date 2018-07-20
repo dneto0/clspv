@@ -66,7 +66,6 @@ namespace {
 // These hacks exist to help transition code generation algorithms
 // without making huge noise in detailed test output.
 const bool Hack_generate_runtime_array_stride_early = true;
-const bool Hack_generate_pointer_to_elem_early = true;
 
 // The value of 1/pi.  This value is from MSDN
 // https://msdn.microsoft.com/en-us/library/4hwaceh6.aspx
@@ -1413,16 +1412,6 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
         errs() << *type << "\n";
         llvm_unreachable("Buffer arguments must map to structures!");
       }
-      if (Hack_generate_pointer_to_elem_early) {
-        // Generate pointer-to-element before the runtime array.
-        // This is a hack to make the generated code look more like old style
-        // clspv output.
-        Type *ptrElemTy = PointerType::get(type->getPointerElementType()
-                                               ->getStructElementType(0)
-                                               ->getArrayElementType(),
-                                           type->getPointerAddressSpace());
-        FindType(ptrElemTy);
-      }
       break;
     case clspv::ArgKind::Pod:
       if (auto *sty = dyn_cast<StructType>(type->getPointerElementType())) {
@@ -1430,15 +1419,6 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
       } else {
         errs() << *type << "\n";
         llvm_unreachable("POD arguments must map to structures!");
-      }
-      if (Hack_generate_pointer_to_elem_early) {
-        // Generate pointer-to-element before the runtime array.
-        // This is a hack to make the generated code look more like old style
-        // clspv output.
-        Type *ptrElemTy = PointerType::get(
-            type->getPointerElementType()->getStructElementType(0),
-            type->getPointerAddressSpace());
-        FindType(ptrElemTy);
       }
       break;
     case clspv::ArgKind::ReadOnlyImage:

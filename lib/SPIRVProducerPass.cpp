@@ -853,6 +853,7 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
 
     for (const Argument &Arg : F.args()) {
       Type *ArgTy = Arg.getType();
+#if 0
       // Reserve SPIR-V IDs for objects related to pointer-to-local arguments.
       if (IsLocalPtr(ArgTy)) {
         auto spec_id = ArgSpecIdMap[&Arg];
@@ -865,6 +866,7 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
         LocalArgs.push_back(&Arg);
         nextID += 5;
       }
+#endif
       if (Arg.use_empty())
         continue; // #error dead
 

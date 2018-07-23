@@ -292,7 +292,6 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
         outs() << "DBA: Function " << F.getName() << " arg " << arg_index
                << " type " << *argTy << "\n";
       }
-      // TODO(dneto): Handle local args.
       const auto arg_kind = clspv::GetArgKindForType(argTy);
 
       // Pointer-to-local arguments don't become resource variables.

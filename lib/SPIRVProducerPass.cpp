@@ -316,10 +316,12 @@ struct SPIRVProducerPass final : public ModulePass {
   void GenerateModuleInfo(Module &M);
   void GenerateGlobalVar(GlobalVariable &GV);
   void GenerateWorkgroupVars();
+  // Generate descriptor map entries for resource variables associated with
+  // arguments to F.
+  void GenerateDescriptorMapInfo(const DataLayout& DL, Function& F);
   void GenerateSamplers(Module &M);
   // Generate OpVariables for %clspv.resource.var.* calls.
   void GenerateResourceVars(Module &M);
-  void GenerateNonSamplerMapDescriptorMapInfo(Module &M);
   void GenerateFuncPrologue(Function &F);
   void GenerateFuncBody(Function &F);
   void GenerateInstForArg(Function &F);
@@ -602,6 +604,8 @@ bool SPIRVProducerPass::runOnModule(Module &module) {
       continue;
     }
 
+    GenerateDescriptorMapInfo(DL, F);
+
     // Generate Function Prologue.
     GenerateFuncPrologue(F);
 
@@ -848,9 +852,21 @@ void SPIRVProducerPass::GenerateLLVMIRInfo(Module &M, const DataLayout &DL) {
     unsigned Idx = 0;
 
     for (const Argument &Arg : F.args()) {
+      Type *ArgTy = Arg.getType();
+      // Reserve SPIR-V IDs for objects related to pointer-to-local arguments.
+      if (IsLocalPtr(ArgTy)) {
+        auto spec_id = ArgSpecIdMap[&Arg];
+        assert(spec_id > 0);
+        LocalArgMap[&Arg] =
+            LocalArgInfo{nextID,     ArgTy->getPointerElementType(),
+                         nextID + 1, nextID + 2,
+                         nextID + 3, nextID + 4,
+                         spec_id};
+        LocalArgs.push_back(&Arg);
+        nextID += 5;
+      }
       if (Arg.use_empty())
         continue; // #error dead
-      Type *ArgTy = Arg.getType();
 
       // The pointee type of the module scope variable we will make.
       Type *GVTy = nullptr;
@@ -1685,10 +1701,14 @@ void SPIRVProducerPass::FindConstant(Value *V) {
     return;
   }
 
+  if (isa<GlobalValue>(V) && clspv::Option::ModuleConstantsInStorageBuffer()) {
+    return;
+  }
+
   Constant *Cst = cast<Constant>(V);
+  Type *CstTy = Cst->getType();
 
   // Handle constant with <4 x i8> type specially.
-  Type *CstTy = Cst->getType();
   if (is4xi8vec(CstTy)) {
     if (!isa<GlobalValue>(V)) {
       CstList.insert(V);
@@ -2688,10 +2708,6 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
   }
 }
 
-void SPIRVProducerPass::GenerateNonSamplerMapDescriptorMapInfo(Module &M) {
-
-}
-
 void SPIRVProducerPass::GenerateGlobalVar(GlobalVariable &GV) {
   Module& M = *GV.getParent();
   SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
@@ -2964,6 +2980,119 @@ void SPIRVProducerPass::GenerateWorkgroupVars() {
 
     SPIRVInstList.push_back(
         new SPIRVInstruction(spv::OpVariable, info.variable_id, Ops));
+  }
+}
+
+void SPIRVProducerPass::GenerateDescriptorMapInfo(const DataLayout &DL,
+                                                  Function &F) {
+  // Gather the list of resources that are used by this function's arguments.
+  DenseSet<unsigned> arg_index_set;
+  DenseMap<unsigned, ResourceVarInfo *> resource_var_at_index;
+  for (auto &info : ResourceVarInfoList) {
+    for (auto &U : info.var_fn->uses()) {
+      if (auto *call = dyn_cast<CallInst>(U.getUser())) {
+        if (&F == call->getParent()->getParent()) {
+          auto arg_index = unsigned(
+              dyn_cast<ConstantInt>(call->getOperand(3))->getZExtValue());
+          arg_index_set.insert(arg_index);
+          resource_var_at_index[arg_index] = &info;
+        }
+      }
+    }
+  }
+
+  auto remap_arg_kind = [](StringRef argKind) {
+    return clspv::Option::PodArgsInUniformBuffer() && argKind.equals("pod")
+               ? "pod_ubo"
+               : argKind;
+  };
+
+  auto *fty = F.getType()->getPointerElementType();
+  auto *func_ty = dyn_cast<FunctionType>(fty);
+
+  // If we've clustereed POD arguments, then argument details are in metadata.
+  // If an argument maps to a resource variable, then get descriptor set and
+  // binding from the resoure variable.  Other info comes from the metadata.
+  const auto *arg_map = F.getMetadata("kernel_arg_map");
+  if (arg_map) {
+    for (const auto &arg : arg_map->operands()) {
+      const MDNode *arg_node = dyn_cast<MDNode>(arg.get());
+      assert(arg_node->getNumOperands() == 6);
+      const auto name =
+          dyn_cast<MDString>(arg_node->getOperand(0))->getString();
+      const auto old_index =
+          dyn_extract<ConstantInt>(arg_node->getOperand(1))->getZExtValue();
+      // Remapped argument index
+      const auto new_index =
+          dyn_extract<ConstantInt>(arg_node->getOperand(2))->getZExtValue();
+      const auto offset =
+          dyn_extract<ConstantInt>(arg_node->getOperand(3))->getZExtValue();
+      const auto argKind = remap_arg_kind(
+          dyn_cast<MDString>(arg_node->getOperand(4))->getString());
+      const auto spec_id =
+          dyn_extract<ConstantInt>(arg_node->getOperand(5))->getSExtValue();
+      if (spec_id > 0) {
+        // This was a pointer-to-local argument.  It is not associated with a
+        // resource variable.
+        descriptorMapOut << "kernel," << F.getName() << ",arg," << name
+                         << ",argOrdinal," << old_index << ",argKind,"
+                         << argKind << ",arrayElemSize,"
+                         << DL.getTypeAllocSize(
+                                func_ty->getParamType(unsigned(new_index))
+                                    ->getPointerElementType())
+                         << ",arrayNumElemSpecId," << spec_id << "\n";
+      } else {
+        auto *info = resource_var_at_index[new_index];
+        assert(info);
+        descriptorMapOut << "kernel," << F.getName() << ",arg," << name
+                         << ",argOrdinal," << old_index << ",descriptorSet,"
+                         << info->descriptor_set << ",binding," << info->binding
+                         << ",offset," << offset << ",argKind," << argKind
+                         << "\n";
+      }
+    }
+  } else {
+    // There is no argument map.
+    // Take descriptor info from the resource variable calls.
+    // Take argument name from the arguments list.
+
+    SmallVector<Argument *, 4> arguments;
+    for (auto &arg : F.args()) {
+      arguments.push_back(&arg);
+    }
+
+    SmallVector<unsigned, 4> ordered_arg_index(arg_index_set.begin(),
+                                               arg_index_set.end());
+    std::sort(ordered_arg_index.begin(), ordered_arg_index.end(),
+              std::less<unsigned>());
+
+    for (auto arg_index : ordered_arg_index) {
+      auto *info = resource_var_at_index[arg_index];
+      assert(info);
+      descriptorMapOut << "kernel," << F.getName() << ",arg,"
+                       << arguments[arg_index]->getName() << ",argOrdinal,"
+                       << arg_index << ",descriptorSet," << info->descriptor_set
+                       << ",binding," << info->binding << ",offset," << 0
+                       << ",argKind,"
+                       << remap_arg_kind(clspv::GetArgKindName(info->arg_kind))
+                       << "\n";
+    }
+    // Generate mappings for pointer-to-local arguments.
+    for (unsigned arg_index = 0; arg_index < arguments.size(); ++arg_index) {
+      Argument *arg = arguments[arg_index];
+      auto where = LocalArgMap.find(arg);
+      if (where != LocalArgMap.end()) {
+        auto &local_arg_info = where->second;
+        descriptorMapOut << "kernel," << F.getName() << ",arg,"
+                         << arg->getName() << ",argOrdinal," << arg_index
+                         << ",argKind,"
+                         << "local"
+                         << ",arrayElemSize,"
+                         << DL.getTypeAllocSize(local_arg_info.elem_type)
+                         << ",arrayNumElemSpecId," << local_arg_info.spec_id
+                         << "\n";
+      }
+    }
   }
 }
 

@@ -279,10 +279,17 @@ bool SimplifyPointerBitcastPass::runOnGEPFromGEP(Module &M) const {
     Idxs.append(GEP->op_begin() + 2, GEP->op_end());
 
     Value *NewGEP = nullptr;
+    // Create the new GEP.  If we used the Builder it will do some folding
+    // that we don't want.  In particular, if the first GEP is to an LLVM
+    // constant then the combined GEP will become a ConstantExpr and it
+    // will hide the pointer from subsequent passes.  So bypass the Builder
+    // and create the GEP instruction directly.
     if (GEP->isInBounds() && OtherGEP->isInBounds()) {
-      NewGEP = Builder.CreateInBoundsGEP(OtherGEP->getPointerOperand(), Idxs);
+      NewGEP = GetElementPtrInst::CreateInBounds(
+          nullptr, OtherGEP->getPointerOperand(), Idxs, "", GEP);
     } else {
-      NewGEP = Builder.CreateGEP(OtherGEP->getPointerOperand(), Idxs);
+      NewGEP = GetElementPtrInst::Create(nullptr, OtherGEP->getPointerOperand(),
+                                         Idxs, "", GEP);
     }
 
     // And replace the original GEP with our replacement GEP.

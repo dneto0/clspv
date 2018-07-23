@@ -1507,7 +1507,14 @@ void SPIRVProducerPass::FindType(Type *Ty) {
 void SPIRVProducerPass::FindConstantPerGlobalVar(GlobalVariable &GV) {
   // If the global variable has a (non undef) initializer.
   if (GV.hasInitializer() && !isa<UndefValue>(GV.getInitializer())) {
-    FindConstant(GV.getInitializer());
+    // Generate the constant if it's not the initializer to a module scope
+    // constant that we will expect in a storage buffer.
+    const bool module_scope_constant_external_init =
+        (GV.getType()->getPointerAddressSpace() == AddressSpace::Constant) &&
+        clspv::Option::ModuleConstantsInStorageBuffer();
+    if (!module_scope_constant_external_init) {
+      FindConstant(GV.getInitializer());
+    }
   }
 }
 
@@ -2857,7 +2864,7 @@ void SPIRVProducerPass::GenerateGlobalVar(GlobalVariable &GV) {
   }
 
   const bool module_scope_constant_external_init =
-      (0 != InitializerID) && (AS == AddressSpace::Constant) &&
+      (AS == AddressSpace::Constant) && GV.hasInitializer() &&
       clspv::Option::ModuleConstantsInStorageBuffer();
 
   if (0 != InitializerID) {

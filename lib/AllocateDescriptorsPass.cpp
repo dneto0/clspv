@@ -404,7 +404,7 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
         var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
       }
 
-      // Replace uses of this argument with something dependent on a a GEP into
+      // Replace uses of this argument with something dependent on a GEP into
       // the the result of a call to the special builtin.
       auto *set_arg = Builder.getInt32(descriptor_set());
       auto *binding_arg = Builder.getInt32(binding_++);

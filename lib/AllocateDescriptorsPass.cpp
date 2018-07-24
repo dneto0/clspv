@@ -287,6 +287,14 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
     Builder.SetInsertPoint(F.getEntryBlock().getFirstNonPHI());
     int arg_index = 0;
     for (Argument &Arg : F.args()) {
+#if 0
+      // Should we ignore unused arguments?  It's probably not an issue
+      // in practice.  Adding this condition would change a bunch of our
+      // tests.
+      if (!Arg.hasNUsesOrMore(1)) {
+        continue;
+      }
+#endif
       Type *argTy = Arg.getType();
       if (ShowDescriptors) {
         outs() << "DBA: Function " << F.getName() << " arg " << arg_index

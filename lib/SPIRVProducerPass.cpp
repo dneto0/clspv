@@ -594,7 +594,6 @@ bool SPIRVProducerPass::runOnModule(Module &module) {
   for (GlobalVariable &GV : module.globals()) {
     GenerateGlobalVar(GV);
   }
-
   GenerateResourceVars(module);
   GenerateWorkgroupVars();
 
@@ -4707,7 +4706,7 @@ void SPIRVProducerPass::GenerateInstruction(Instruction &I) {
     Function *Callee = Call->getCalledFunction();
 
     if (Callee->getName().startswith("clspv.resource.var.")) {
-      if (ResourceVarDeferredLoadCalls.count(Call)) {
+      if (ResourceVarDeferredLoadCalls.count(Call) && Call->hasNUsesOrMore(1)) {
         // Generate an OpLoad
         SPIRVOperandList Ops;
         const auto load_id = nextID++;

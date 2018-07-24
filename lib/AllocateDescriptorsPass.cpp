@@ -307,6 +307,7 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
         if (ShowDescriptors) {
           errs() << "DBA: skip pointer-to-local\n\n";
         }
+        arg_index++;
         continue;
       }
 

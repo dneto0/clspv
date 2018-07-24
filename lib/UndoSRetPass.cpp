@@ -147,6 +147,10 @@ bool UndoSRetPass::runOnModule(Module &M) {
             NewCall->setAttributes(Call->getAttributes());
             NewCall->setDebugLoc(Call->getDebugLoc());
 
+            // The first parameter had a StructRet parameter.  Remove it or
+            // the call will be invalid.
+            NewCall->removeParamAttr(0, Attribute::StructRet);
+
             // Store the value we returned from our function call into the
             // the orignal destination.
             new StoreInst(NewCall, Call->getArgOperand(0), Call);

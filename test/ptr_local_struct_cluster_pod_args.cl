@@ -12,7 +12,7 @@ typedef struct S {
 } S;
 
 kernel void foo(local float *L, global float* A, S local* LS, constant float* C, float f, float g ) {
- *A = *L + *C + f + g;
+ *A = *L + *C + f + g + LS->a;
 }
 
 // MAP: kernel,foo,arg,L,argOrdinal,0,argKind,local,arrayElemSize,4,arrayNumElemSpecId,3

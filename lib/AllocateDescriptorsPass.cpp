@@ -267,201 +267,324 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
   bool Changed = false;
   outs() << "Allocate kernel arg descriptors\n";
   discriminant_map_.clear();
-  IRBuilder<> Builder(M.getContext());
+
+  // First classify all kernel arguments by arg discriminant which
+  // is the pair (type, arg index).  Each discriminant remembers which
+  // functions it's used by.  Each function remembers the pairs associated
+  // with each argument.
+
+  // Maps an arg discriminant index to the list of functions using that
+  // discriminant.
+  using FunctionsUsedByDiscriminantMap =
+      SmallVector<SmallVector<Function *, 3>, 3>;
+  FunctionsUsedByDiscriminantMap functions_used_by_discriminant;
+
+  struct DiscriminantInfo {
+    int index;
+    KernelArgDiscriminant discriminant;
+  };
+  // Maps a function to an ordered list of discriminants and their.  The -1
+  // value is a sentinel indicating the argument does not use a descriptor.
+  DenseMap<Function *, SmallVector<DiscriminantInfo, 3>>
+      discriminants_used_by_function;
+
+  // Remember the list of kernels with bodies, for convenience.
+  SmallVector<Function *, 3> kernels_with_bodies;
+
   for (Function &F : M) {
-    // The descriptor set to use.  UINT_MAX indicates we haven't allocated one
-    // yet.
-    unsigned saved_descriptor_set = UINT_MAX;
-    auto descriptor_set = [this, &M, &saved_descriptor_set]() {
-      if (saved_descriptor_set == UINT_MAX) {
-        saved_descriptor_set = StartNewDescriptorSet(M);
-      }
-      return saved_descriptor_set;
-    };
     // Only scan arguments of kernel functions that have bodies.
     if (F.isDeclaration() || F.getCallingConv() != CallingConv::SPIR_KERNEL) {
       continue;
     }
-    // Prepare to insert arg remapping instructions at the start of the
-    // function.
-    Builder.SetInsertPoint(F.getEntryBlock().getFirstNonPHI());
+    kernels_with_bodies.push_back(&F);
+    auto &discriminants_list = discriminants_used_by_function[&F];
+
     int arg_index = 0;
     for (Argument &Arg : F.args()) {
-#if 0
-      // Should we ignore unused arguments?  It's probably not an issue
-      // in practice.  Adding this condition would change a bunch of our
-      // tests.
-      if (!Arg.hasNUsesOrMore(1)) {
-        continue;
-      }
-#endif
       Type *argTy = Arg.getType();
-      if (ShowDescriptors) {
-        outs() << "DBA: Function " << F.getName() << " arg " << arg_index
-               << " type " << *argTy << "\n";
-      }
-      const auto arg_kind = clspv::GetArgKindForType(argTy);
+
+      KernelArgDiscriminant key{argTy, arg_index};
+
+      // First assume no descriptor is required.
+      discriminants_list.push_back(DiscriminantInfo{-1, key});
 
       // Pointer-to-local arguments don't become resource variables.
+      const auto arg_kind = clspv::GetArgKindForType(argTy);
       if (arg_kind == clspv::ArgKind::Local) {
         if (ShowDescriptors) {
           errs() << "DBA: skip pointer-to-local\n\n";
         }
-        arg_index++;
-        continue;
-      }
-
-      // Put it in if it isn't there.
-      KernelArgDiscriminant key{argTy, arg_index};
-      auto where = discriminant_map_.find(key);
-      int index;
-      unsigned addr_space = unsigned(-1);
-      Type *resource_type = nullptr;
-      bool inserted = false;
-      if (where == discriminant_map_.end()) {
-        index = int(discriminant_map_.size());
-
-        // Save the new unique index for this discriminant.
-        discriminant_map_[key] = index;
-        inserted = true;
       } else {
-        index = where->second;
+
+        auto where = discriminant_map_.find(key);
+        int index;
+        if (where == discriminant_map_.end()) {
+          index = int(discriminant_map_.size());
+          // Save the new unique index for this discriminant.
+          discriminant_map_[key] = index;
+          functions_used_by_discriminant.push_back(
+              SmallVector<Function *, 3>{&F});
+        } else {
+          index = where->second;
+          functions_used_by_discriminant[index].push_back(&F);
+        }
+        discriminants_list.back().index = index;
       }
 
-      // TODO(dneto): Describe opaque and Local cases.
-      // For pointer-to-global and POD arguments, we will remap this
-      // kernel argument to a SPIR-V module-scope OpVariable, as follows:
-      //
-      // Create a %clspv.resource.var.<kind>.N function that returns
-      // the same kind of pointer that the OpVariable evaluates to.
-      // The first two arguments are the descriptor set and binding
-      // to use.
-      //
-      // For each call to a %clspv.resource.var.<kind>.N with a unique
-      // descriptor set and binding, the SPIRVProducer pass will:
-      // 1) Create a unique OpVariable
-      // 2) Map uses of the call to the function with the base pointer
-      // to use.
-      //   For a storage buffer it's the the elements in the runtime
-      // array in the module-scope storage buffer variable.
-      // So it's something that maps to:
-      //     OpAccessChain %ptr_to_elem %the-var %uint_0 %uint_0
-      //   For POD data, its something like this:
-      //     OpAccessChain %ptr_to_elem %the-var %uint_0
-      // 3) Generate no SPIR-V code for the call itself.
+      arg_index++;
+    }
+  }
 
-      switch (arg_kind) {
-      case clspv::ArgKind::Buffer: {
-        // If original argument is:
-        //   Elem addrspace(1)*
-        // Then make a zero-length array to mimic a StorageBuffer struct
-        // whose first element is a RuntimeArray:
+  IRBuilder<> Builder(M.getContext());
+
+  // Now map kernel arguments to descriptor sets and bindings.
+  // There are two buckets of descriptor sets:
+  // - The all_kernels_descriptor_set is for resources that are used
+  //   by all kernels in the module.
+  // - Otherwise, each kernel gets is own descriptor set for its
+  //   arguments that don't map to the same discriminant in *all*
+  //   kernels. (It might map to a few, but not all.)
+  // The kUnallocated descriptor set value means "not yet allocated".
+  enum { kUnallocated = UINT_MAX };
+  unsigned all_kernels_descriptor_set = kUnallocated;
+  // Map the arg index to the binding to use in the all-descriptors descriptor
+  // set.
+  DenseMap<int, unsigned> all_kernels_binding_for_arg_index;
+
+  // Maps a function to the list of set and binding to use, per argument.
+  DenseMap<Function *, SmallVector<std::pair<unsigned, unsigned>, 3>>
+      set_and_binding_pairs_for_function;
+
+  // Determine set and binding for each kernel argument requiring a descriptor.
+  for (Function *f_ptr : kernels_with_bodies) {
+    unsigned this_kernel_descriptor_set = kUnallocated;
+    unsigned this_kernel_next_binding = 0;
+
+    auto &discriminants_list = discriminants_used_by_function[f_ptr];
+
+    int arg_index = 0;
+
+    auto &set_and_binding_list = set_and_binding_pairs_for_function[f_ptr];
+    for (auto &info : discriminants_used_by_function[f_ptr]) {
+      set_and_binding_list.emplace_back(kUnallocated, kUnallocated);
+      if (discriminants_list[arg_index].index >= 0) {
+        // This argument will map to a resource.
+        unsigned set = kUnallocated;
+        unsigned binding = kUnallocated;
+        if (functions_used_by_discriminant[info.index].size() ==
+            kernels_with_bodies.size()) {
+          // This kernel argument discriminant is consistent across all kernels.
+          // Reuse the descriptor.
+          if (all_kernels_descriptor_set == kUnallocated) {
+            all_kernels_descriptor_set = clspv::TakeDescriptorIndex(&M);
+          }
+          set = all_kernels_descriptor_set;
+          auto where = all_kernels_binding_for_arg_index.find(arg_index);
+          if (where == all_kernels_binding_for_arg_index.end()) {
+            binding = all_kernels_binding_for_arg_index.size();
+            all_kernels_binding_for_arg_index[arg_index] = binding;
+          } else {
+            binding = where->second;
+          }
+        } else {
+          // Use a descriptor in the descriptor set dedicated to this
+          // kernel.
+          if (this_kernel_descriptor_set == kUnallocated) {
+            this_kernel_descriptor_set = clspv::TakeDescriptorIndex(&M);
+          }
+          set = this_kernel_descriptor_set;
+          binding = this_kernel_next_binding++;
+        }
+        set_and_binding_list.back().first = set;
+        set_and_binding_list.back().second = binding;
+      }
+      arg_index++;
+    }
+  }
+
+  // Rewrite the uses of the arguments.
+  for (Function *f_ptr : kernels_with_bodies) {
+    auto &set_and_binding_list = set_and_binding_pairs_for_function[f_ptr];
+    auto &discriminants = discriminants_used_by_function[f_ptr];
+    const auto num_args = unsigned(set_and_binding_list.size());
+    if (num_args != unsigned(discriminants.size())) {
+      errs() << "num_args " << num_args << " != num discriminants "
+             << discriminants.size() << "\n";
+      llvm_unreachable("Bad accounting in descriptor allocation");
+    }
+
+    // Prepare to insert arg remapping instructions at the start of the
+    // function.
+    Builder.SetInsertPoint(f_ptr->getEntryBlock().getFirstNonPHI());
+
+    int arg_index = 0;
+    for (Argument &Arg : f_ptr->args()) {
+      if (discriminants[arg_index].index >= 0) {
+        // This argument needs to be rewritten.
+
+#if 0
+        // TODO(dneto) Should we ignore unused arguments?  It's probably not an
+        // issue in practice.  Adding this condition would change a bunch of our
+        // tests.
+        if (!Arg.hasNUsesOrMore(1)) {
+          continue;
+        }
+#endif
+
+        Type *argTy = discriminants[arg_index].discriminant.type;
+        assert(arg_index == discriminants[arg_index].discriminant.arg_index);
+
+        if (ShowDescriptors) {
+          outs() << "DBA: Function " << f_ptr->getName() << " arg " << arg_index
+                 << " type " << *argTy << "\n";
+        }
+
+        const auto arg_kind = clspv::GetArgKindForType(argTy);
+
+        Type *resource_type = nullptr;
+        unsigned addr_space = kUnallocated;
+
+        // TODO(dneto): Describe opaque case.
+        // For pointer-to-global and POD arguments, we will remap this
+        // kernel argument to a SPIR-V module-scope OpVariable, as follows:
         //
-        //   { [0 x Elem] }
+        // Create a %clspv.resource.var.<kind>.N function that returns
+        // the same kind of pointer that the OpVariable evaluates to.
+        // The first two arguments are the descriptor set and binding
+        // to use.
         //
-        // Use unnamed struct types so we generate less SPIR-V code.
+        // For each call to a %clspv.resource.var.<kind>.N with a unique
+        // descriptor set and binding, the SPIRVProducer pass will:
+        // 1) Create a unique OpVariable
+        // 2) Map uses of the call to the function with the base pointer
+        // to use.
+        //   For a storage buffer it's the the elements in the runtime
+        // array in the module-scope storage buffer variable.
+        // So it's something that maps to:
+        //     OpAccessChain %ptr_to_elem %the-var %uint_0 %uint_0
+        //   For POD data, its something like this:
+        //     OpAccessChain %ptr_to_elem %the-var %uint_0
+        // 3) Generate no SPIR-V code for the call itself.
 
-        // Create the type only once.
-        auto *arr_type = ArrayType::get(argTy->getPointerElementType(), 0);
-        resource_type = StructType::get({arr_type});
-        // Preserve the address space in case the pointer is passed into a
-        // helper function: we don't want to change the type of the helper
-        // function parameter.
-        addr_space = argTy->getPointerAddressSpace();
-        break;
+        switch (arg_kind) {
+        case clspv::ArgKind::Buffer: {
+          // If original argument is:
+          //   Elem addrspace(1)*
+          // Then make a zero-length array to mimic a StorageBuffer struct
+          // whose first element is a RuntimeArray:
+          //
+          //   { [0 x Elem] }
+          //
+          // Use unnamed struct types so we generate less SPIR-V code.
+
+          // Create the type only once.
+          auto *arr_type = ArrayType::get(argTy->getPointerElementType(), 0);
+          resource_type = StructType::get({arr_type});
+          // Preserve the address space in case the pointer is passed into a
+          // helper function: we don't want to change the type of the helper
+          // function parameter.
+          addr_space = argTy->getPointerAddressSpace();
+          break;
+        }
+        case clspv::ArgKind::Pod: {
+          // If original argument is:
+          //   Elem %arg
+          // Then make a StorageBuffer struct whose element is pod-type:
+          //
+          //   { Elem }
+          //
+          // Use unnamed struct types so we generate less SPIR-V code.
+          resource_type = StructType::get({argTy});
+          addr_space = clspv::AddressSpace::Global;
+          break;
+        }
+        case clspv::ArgKind::Sampler:
+        case clspv::ArgKind::ReadOnlyImage:
+        case clspv::ArgKind::WriteOnlyImage:
+          // We won't be translating the value here.  Keep the type the same.
+          // since calls using these values need to keep the same type.
+          resource_type = argTy->getPointerElementType();
+          addr_space = argTy->getPointerAddressSpace();
+          break;
+        default:
+          errs() << "Unhandled type " << *argTy << "\n";
+          llvm_unreachable("Allocation of descriptors: Unhandled type");
+        }
+
+        assert(resource_type);
+
+        auto fn_name = std::string("clspv.resource.var.") +
+                       std::to_string(discriminants[arg_index].index);
+        Function *var_fn = M.getFunction(fn_name);
+
+        if (!var_fn) {
+          // Make the function
+          PointerType *ptrTy = PointerType::get(resource_type, addr_space);
+          // The parameters are:
+          //  descriptor set
+          //  binding
+          //  arg kind
+          //  arg index
+          Type *i32 = Builder.getInt32Ty();
+          FunctionType *fnTy =
+              FunctionType::get(ptrTy, {i32, i32, i32, i32}, false);
+          var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
+        }
+
+        // Replace uses of this argument with something dependent on a GEP
+        // into the the result of a call to the special builtin.
+        const auto set = set_and_binding_list[arg_index].first;
+        const auto binding = set_and_binding_list[arg_index].second;
+        auto *set_arg = Builder.getInt32(set);
+        auto *binding_arg = Builder.getInt32(binding);
+        auto *arg_kind_arg = Builder.getInt32(unsigned(arg_kind));
+        auto *arg_index_arg = Builder.getInt32(arg_index);
+        auto *call = Builder.CreateCall(
+            var_fn, {set_arg, binding_arg, arg_kind_arg, arg_index_arg});
+
+        Value *replacement = nullptr;
+        Value *zero = Builder.getInt32(0);
+        switch (arg_kind) {
+        case clspv::ArgKind::Buffer:
+          // Return a GEP to the first element
+          // in the runtime array we'll make.
+          replacement = Builder.CreateGEP(call, {zero, zero, zero});
+          break;
+        case clspv::ArgKind::Pod: {
+          // Replace with a load of the start of the (virtual) variable.
+          auto *gep = Builder.CreateGEP(call, {zero, zero});
+          replacement = Builder.CreateLoad(gep);
+        } break;
+        case clspv::ArgKind::ReadOnlyImage:
+        case clspv::ArgKind::WriteOnlyImage:
+        case clspv::ArgKind::Sampler: {
+          // The call returns a pointer to an opaque type.  Eventually the
+          // SPIR-V will need to load the variable, so the natural thing would
+          // be to emit an LLVM load here.  But LLVM does not allow a load of
+          // an opaque type because it's unsized.  So keep the bare call here,
+          // and do the translation to a load in the SPIRVProducer pass.
+          replacement = call;
+        } break;
+        case clspv::ArgKind::Local:
+          llvm_unreachable("local is unhandled");
+        }
+
+        if (ShowDescriptors) {
+          outs() << "DBA: Map " << *argTy << " " << arg_index << " -> "
+                 << discriminants[arg_index].index << "(" << set << ","
+                 << binding << ")"
+                 << "\n";
+          outs() << "DBA:   resource type        " << *resource_type << "\n";
+          outs() << "DBA:   var fn               " << *var_fn << "\n";
+          outs() << "DBA:     var call           " << *call << "\n";
+          outs() << "DBA:     var replacement    " << *replacement << "\n";
+          outs() << "DBA:     var replacement ty " << *(replacement->getType())
+                 << "\n";
+          outs() << "\n\n";
+        }
+
+        Arg.replaceAllUsesWith(replacement);
       }
-      case clspv::ArgKind::Pod: {
-        // If original argument is:
-        //   Elem %arg
-        // Then make a StorageBuffer struct whose element is pod-type:
-        //
-        //   { Elem }
-        //
-        // Use unnamed struct types so we generate less SPIR-V code.
-        resource_type = StructType::get({argTy});
-        addr_space = clspv::AddressSpace::Global;
-        break;
-      }
-      case clspv::ArgKind::Sampler:
-      case clspv::ArgKind::ReadOnlyImage:
-      case clspv::ArgKind::WriteOnlyImage:
-        // We won't be translating the value here.  Keep the type the same.
-        // since calls using these values need to keep the same type.
-        resource_type = argTy->getPointerElementType();
-        addr_space = argTy->getPointerAddressSpace();
-        break;
-      default:
-        errs() << "Unhandled type " << *argTy << "\n";
-        llvm_unreachable("Allocation of descriptors: Unhandled type");
-      }
-
-      assert(resource_type);
-      auto fn_name = std::string("clspv.resource.var.") + std::to_string(index);
-      Function *var_fn = M.getFunction(fn_name);
-      if (!var_fn) {
-        // Make the function
-        PointerType *ptrTy = PointerType::get(resource_type, addr_space);
-        // The parameters are:
-        //  descriptor set
-        //  binding
-        //  arg kind
-        //  arg index
-        Type *i32 = Builder.getInt32Ty();
-        FunctionType *fnTy =
-            FunctionType::get(ptrTy, {i32, i32, i32, i32}, false);
-        var_fn = cast<Function>(M.getOrInsertFunction(fn_name, fnTy));
-      }
-
-      // Replace uses of this argument with something dependent on a GEP into
-      // the the result of a call to the special builtin.
-      auto *set_arg = Builder.getInt32(descriptor_set());
-      auto *binding_arg = Builder.getInt32(binding_++);
-      auto *arg_kind_arg = Builder.getInt32(unsigned(arg_kind));
-      auto *arg_index_arg = Builder.getInt32(arg_index);
-      auto *call = Builder.CreateCall(
-          var_fn, {set_arg, binding_arg, arg_kind_arg, arg_index_arg});
-
-      Value *replacement = nullptr;
-      Value *zero = Builder.getInt32(0);
-      switch (arg_kind) {
-      case clspv::ArgKind::Buffer:
-        // Return a GEP to the first element
-        // in the runtime array we'll make.
-        replacement = Builder.CreateGEP(call, {zero, zero, zero});
-        break;
-      case clspv::ArgKind::Pod: {
-        // Replace with a load of the start of the (virtual) variable.
-        auto *gep = Builder.CreateGEP(call, {zero, zero});
-        replacement = Builder.CreateLoad(gep);
-      } break;
-      case clspv::ArgKind::ReadOnlyImage:
-      case clspv::ArgKind::WriteOnlyImage:
-      case clspv::ArgKind::Sampler: {
-        // The call returns a pointer to an opaque type.  Eventually the SPIR-V
-        // will need to load the variable, so the natural thing would be to
-        // emit an LLVM load here.  But LLVM does not allow a load of an opaque
-        // type because it's unsized.  So keep the bare call here, and do
-        // the translation to a load in the SPIRVProducer pass.
-        replacement = call;
-      } break;
-      case clspv::ArgKind::Local:
-        llvm_unreachable("local is unhandled");
-      }
-
-      if (ShowDescriptors) {
-        outs() << "DBA: Map " << *argTy << " " << arg_index << " -> " << index
-               << "\n";
-        outs() << "DBA:   resource type        " << *resource_type << "\n";
-        outs() << "DBA:   var fn               " << *var_fn << "\n";
-        outs() << "DBA:     var call           " << *call << "\n";
-        outs() << "DBA:     var replacement    " << *replacement << "\n";
-        outs() << "DBA:     var replacement ty " << *(replacement->getType())
-               << "\n";
-        outs() << "\n\n";
-      }
-
-      Arg.replaceAllUsesWith(replacement);
-
       arg_index++;
     }
   }

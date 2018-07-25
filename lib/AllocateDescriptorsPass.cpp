@@ -38,7 +38,7 @@ using namespace llvm;
 
 namespace {
 
-cl::opt<bool> ShowDescriptors("show-desc", cl::init(true), cl::Hidden,
+cl::opt<bool> ShowDescriptors("show-desc", cl::init(false), cl::Hidden,
                               cl::desc("Show descriptors"));
 
 using SamplerMapType = llvm::ArrayRef<std::pair<unsigned, std::string>>;
@@ -265,7 +265,9 @@ bool AllocateDescriptorsPass::AllocateLiteralSamplerDescriptors(Module &M) {
 
 bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
   bool Changed = false;
-  outs() << "Allocate kernel arg descriptors\n";
+  if (ShowDescriptors) {
+    outs() << "Allocate kernel arg descriptors\n";
+  }
   discriminant_map_.clear();
 
   // First classify all kernel arguments by arg discriminant which

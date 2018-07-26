@@ -2987,14 +2987,26 @@ void SPIRVProducerPass::GenerateDescriptorMapInfo(const DataLayout &DL,
   // Gather the list of resources that are used by this function's arguments.
   DenseSet<unsigned> arg_index_set;
   DenseMap<unsigned, ResourceVarInfo *> resource_var_at_index;
+  // We'll scan uses of the var_fn for each resource var info struct.  This
+  // will overcount in the case where the same resource is shared across
+  // kernels.  So we have to filter two ways:  ensuring the call site really
+  // is in the target function F, and also to ensure the set and binding
+  // for the resource-var-info struct match the set and binding as specified
+  // in the call.
   for (auto &info : ResourceVarInfoList) {
     for (auto &U : info.var_fn->uses()) {
       if (auto *call = dyn_cast<CallInst>(U.getUser())) {
         if (&F == call->getParent()->getParent()) {
+          auto set = unsigned(
+              dyn_cast<ConstantInt>(call->getOperand(0))->getZExtValue());
+          auto binding = unsigned(
+              dyn_cast<ConstantInt>(call->getOperand(1))->getZExtValue());
           auto arg_index = unsigned(
               dyn_cast<ConstantInt>(call->getOperand(3))->getZExtValue());
-          arg_index_set.insert(arg_index);
-          resource_var_at_index[arg_index] = &info;
+          if (set == info.descriptor_set && binding == info.binding) {
+            arg_index_set.insert(arg_index);
+            resource_var_at_index[arg_index] = &info;
+          }
         }
       }
     }

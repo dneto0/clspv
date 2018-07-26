@@ -27,6 +27,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "clspv/AddressSpace.h"
+#include "clspv/Option.h"
 #include "clspv/Passes.h"
 
 #include "ArgKind.h"
@@ -270,6 +271,9 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
   }
   discriminant_map_.clear();
 
+  const bool always_distinct_sets =
+      clspv::Option::DistinctKernelDescriptorSets();
+
   // First classify all kernel arguments by arg discriminant which
   // is the pair (type, arg index).  Each discriminant remembers which
   // functions it's used by.  Each function remembers the pairs associated
@@ -317,9 +321,8 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
           errs() << "DBA: skip pointer-to-local\n\n";
         }
       } else {
-
-        auto where = discriminant_map_.find(key);
         int index;
+        auto where = discriminant_map_.find(key);
         if (where == discriminant_map_.end()) {
           index = int(discriminant_map_.size());
           // Save the new unique index for this discriminant.
@@ -331,13 +334,15 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
           functions_used_by_discriminant[index].push_back(&F);
         }
         discriminants_list.back().index = index;
+        if (ShowDescriptors) {
+          outs() << F.getName() << " " << Arg.getName() << " -> index " << index
+                 << "\n";
+        }
       }
 
       arg_index++;
     }
   }
-
-  IRBuilder<> Builder(M.getContext());
 
   // Now map kernel arguments to descriptor sets and bindings.
   // There are two buckets of descriptor sets:
@@ -354,65 +359,102 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
   DenseMap<int, unsigned> all_kernels_binding_for_arg_index;
 
   // Maps a function to the list of set and binding to use, per argument.
+  // For an argument that does no use a descriptor, its set and binding are
+  // both the kUnallocated value.
   DenseMap<Function *, SmallVector<std::pair<unsigned, unsigned>, 3>>
       set_and_binding_pairs_for_function;
 
   // Determine set and binding for each kernel argument requiring a descriptor.
-  for (Function *f_ptr : kernels_with_bodies) {
-    unsigned this_kernel_descriptor_set = kUnallocated;
-    unsigned this_kernel_next_binding = 0;
-
-    auto &discriminants_list = discriminants_used_by_function[f_ptr];
-
-    int arg_index = 0;
-
-    auto &set_and_binding_list = set_and_binding_pairs_for_function[f_ptr];
-    for (auto &info : discriminants_used_by_function[f_ptr]) {
-      set_and_binding_list.emplace_back(kUnallocated, kUnallocated);
-      if (discriminants_list[arg_index].index >= 0) {
-        // This argument will map to a resource.
-        unsigned set = kUnallocated;
-        unsigned binding = kUnallocated;
-        if (functions_used_by_discriminant[info.index].size() ==
-            kernels_with_bodies.size()) {
-          // This kernel argument discriminant is consistent across all kernels.
-          // Reuse the descriptor.
-          if (all_kernels_descriptor_set == kUnallocated) {
-            all_kernels_descriptor_set = clspv::TakeDescriptorIndex(&M);
-          }
-          set = all_kernels_descriptor_set;
-          auto where = all_kernels_binding_for_arg_index.find(arg_index);
-          if (where == all_kernels_binding_for_arg_index.end()) {
-            binding = all_kernels_binding_for_arg_index.size();
-            all_kernels_binding_for_arg_index[arg_index] = binding;
-          } else {
-            binding = where->second;
-          }
-        } else {
-          // Use a descriptor in the descriptor set dedicated to this
-          // kernel.
-          if (this_kernel_descriptor_set == kUnallocated) {
-            this_kernel_descriptor_set = clspv::TakeDescriptorIndex(&M);
-          }
-          set = this_kernel_descriptor_set;
-          binding = this_kernel_next_binding++;
+  if (always_distinct_sets) {
+    for (Function *f_ptr : kernels_with_bodies) {
+      auto &set_and_binding_list = set_and_binding_pairs_for_function[f_ptr];
+      auto &discriminants_list = discriminants_used_by_function[f_ptr];
+      const auto set = clspv::TakeDescriptorIndex(&M);
+      unsigned binding = 0;
+      int arg_index = 0;
+      for (Argument &Arg : f_ptr->args()) {
+        set_and_binding_list.emplace_back(kUnallocated, kUnallocated);
+        if (discriminants_list[arg_index].index >= 0) {
+          outs() << f_ptr->getName() << " " << Arg.getName() << " set " << set
+                 << " binding " << binding << "\n";
+          set_and_binding_list.back().first = set;
+          set_and_binding_list.back().second = binding++;
         }
-        set_and_binding_list.back().first = set;
-        set_and_binding_list.back().second = binding;
+        arg_index++;
       }
-      arg_index++;
+    }
+  } else {
+    // Share as much as possible.
+    for (Function *f_ptr : kernels_with_bodies) {
+      unsigned this_kernel_descriptor_set = kUnallocated;
+      unsigned this_kernel_next_binding = 0;
+
+      auto &discriminants_list = discriminants_used_by_function[f_ptr];
+
+      int arg_index = 0;
+
+      auto &set_and_binding_list = set_and_binding_pairs_for_function[f_ptr];
+      for (auto &info : discriminants_used_by_function[f_ptr]) {
+        set_and_binding_list.emplace_back(kUnallocated, kUnallocated);
+        if (discriminants_list[arg_index].index >= 0) {
+          // This argument will map to a resource.
+          unsigned set = kUnallocated;
+          unsigned binding = kUnallocated;
+          if (functions_used_by_discriminant[info.index].size() ==
+              kernels_with_bodies.size()) {
+            // This kernel argument discriminant is consistent across all
+            // kernels. Reuse the descriptor.
+            if (all_kernels_descriptor_set == kUnallocated) {
+              all_kernels_descriptor_set = clspv::TakeDescriptorIndex(&M);
+            }
+            set = all_kernels_descriptor_set;
+            auto where = all_kernels_binding_for_arg_index.find(arg_index);
+            if (where == all_kernels_binding_for_arg_index.end()) {
+              binding = all_kernels_binding_for_arg_index.size();
+              all_kernels_binding_for_arg_index[arg_index] = binding;
+            } else {
+              binding = where->second;
+            }
+          } else {
+            // Use a descriptor in the descriptor set dedicated to this
+            // kernel.
+            if (this_kernel_descriptor_set == kUnallocated) {
+              this_kernel_descriptor_set = clspv::TakeDescriptorIndex(&M);
+            }
+            set = this_kernel_descriptor_set;
+            binding = this_kernel_next_binding++;
+          }
+          set_and_binding_list.back().first = set;
+          set_and_binding_list.back().second = binding;
+        }
+        arg_index++;
+      }
     }
   }
 
   // Rewrite the uses of the arguments.
+  IRBuilder<> Builder(M.getContext());
   for (Function *f_ptr : kernels_with_bodies) {
     auto &set_and_binding_list = set_and_binding_pairs_for_function[f_ptr];
     auto &discriminants = discriminants_used_by_function[f_ptr];
     const auto num_args = unsigned(set_and_binding_list.size());
-    if (num_args != unsigned(discriminants.size())) {
+    if (!always_distinct_sets && (num_args != unsigned(discriminants.size()))) {
       errs() << "num_args " << num_args << " != num discriminants "
              << discriminants.size() << "\n";
       llvm_unreachable("Bad accounting in descriptor allocation");
+    }
+    const auto num_fun_args = unsigned(f_ptr->arg_end() - f_ptr->arg_begin());
+    if (num_fun_args != num_args) {
+      errs() << f_ptr->getName() << " has " << num_fun_args
+             << " params but we have set_and_binding list of length "
+             << num_args << "\n";
+      errs() << *f_ptr << "\n";
+      errs() << *(f_ptr->getType()) << "\n";
+      for (auto &arg : f_ptr->args()) {
+        errs() << "   " << arg << "\n";
+      }
+      llvm_unreachable("Bad accounting in descriptor allocation. Mismatch with "
+                       "function param list");
     }
 
     // Prepare to insert arg remapping instructions at the start of the
@@ -421,9 +463,15 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
 
     int arg_index = 0;
     for (Argument &Arg : f_ptr->args()) {
+      outs() << f_ptr->getName() << " " << Arg.getName() << " arg_index "
+             << arg_index << "\n";
       if (discriminants[arg_index].index >= 0) {
         // This argument needs to be rewritten.
 
+        const auto set = set_and_binding_list[arg_index].first;
+        const auto binding = set_and_binding_list[arg_index].second;
+        outs() << f_ptr->getName() << " " << Arg.getName() << " arg_index "
+               << arg_index << " set " << set << " binding " << binding << "\n";
 #if 0
         // TODO(dneto) Should we ignore unused arguments?  It's probably not an
         // issue in practice.  Adding this condition would change a bunch of our
@@ -535,8 +583,6 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
 
         // Replace uses of this argument with something dependent on a GEP
         // into the the result of a call to the special builtin.
-        const auto set = set_and_binding_list[arg_index].first;
-        const auto binding = set_and_binding_list[arg_index].second;
         auto *set_arg = Builder.getInt32(set);
         auto *binding_arg = Builder.getInt32(binding);
         auto *arg_kind_arg = Builder.getInt32(unsigned(arg_kind));

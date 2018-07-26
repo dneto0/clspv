@@ -20,6 +20,8 @@
 #include <cstring>
 
 #include <unordered_set>
+#include <memory>
+
 #include <clspv/Option.h>
 #include <clspv/Passes.h>
 
@@ -477,7 +479,7 @@ private:
   };
   // A list of resource var info.  Resource var indices are indices
   // into this vector.
-  SmallVector<ResourceVarInfo, 8> ResourceVarInfoList;
+  SmallVector<std::unique_ptr<ResourceVarInfo>, 8> ResourceVarInfoList;
   // This is a vector of pointers of all the resource vars, but ordered by
   // kernel function, and then by argument.
   UniqueVector<ResourceVarInfo*> ModuleOrderedResourceVars;
@@ -1209,11 +1211,10 @@ void SPIRVProducerPass::FindResourceVars(Module &M, const DataLayout &DL) {
             set_and_binding_to_index[key] = rv_index;
             const auto arg_kind = clspv::ArgKind(
                 dyn_cast<ConstantInt>(call->getArgOperand(2))->getZExtValue());
-            ResourceVarInfoList.emplace_back(rv_index, set, binding, &F,
-                                             arg_kind);
-            rv = &ResourceVarInfoList.back();
+            rv = new ResourceVarInfo(rv_index, set, binding, &F, arg_kind);
+            ResourceVarInfoList.emplace_back(std::move(rv));
           } else {
-            rv = &ResourceVarInfoList[where->second];
+            rv = ResourceVarInfoList[where->second].get();
           }
           // Now populate FunctionToResourceVarsMap.
           auto &mapping =
@@ -1231,7 +1232,7 @@ void SPIRVProducerPass::FindResourceVars(Module &M, const DataLayout &DL) {
   for (Function &F : M) {
     auto where = FunctionToResourceVarsMap.find(&F);
     if (where != FunctionToResourceVarsMap.end()) {
-      for (ResourceVarInfo *rv : where->second) {
+      for (auto &rv : where->second) {
         if (rv != nullptr) {
           ModuleOrderedResourceVars.insert(rv);
         }
@@ -1443,7 +1444,7 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
 
   // To match older clspv codegen, generate the float type first if required
   // for images.
-  for (auto *info : ModuleOrderedResourceVars) {
+  for (const auto *info : ModuleOrderedResourceVars) {
     if (info->arg_kind == clspv::ArgKind::ReadOnlyImage ||
         info->arg_kind == clspv::ArgKind::WriteOnlyImage) {
       // We need "float" for the sampled component type.
@@ -2646,12 +2647,14 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
   SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
   ValueMapType &VMap = getValueMap();
 
+  const SmallVector<ResourceVarInfo *, 128> rvs(
+      ModuleOrderedResourceVars.begin(), ModuleOrderedResourceVars.end());
+
   // Generate variables.
-  for (auto *info_ptr : ModuleOrderedResourceVars) {
-    auto &info = *info_ptr;
-    Type *type = info.var_fn->getReturnType();
+  for (auto *info : rvs) {
+    Type *type = info->var_fn->getReturnType();
     // Remap the address space for opaque types.
-    switch (info.arg_kind) {
+    switch (info->arg_kind) {
     case clspv::ArgKind::Sampler:
     case clspv::ArgKind::ReadOnlyImage:
     case clspv::ArgKind::WriteOnlyImage:
@@ -2662,35 +2665,35 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
       break;
     }
 
-    info.var_id = nextID++;
+    info->var_id = nextID++;
 
     const auto type_id = lookupType(type);
-    const auto sc = GetStorageClass(info.arg_kind);
+    const auto sc = GetStorageClass(info->arg_kind);
     SPIRVOperandList Ops;
     Ops << MkId(type_id) << MkNum(sc);
 
-    auto *Inst = new SPIRVInstruction(spv::OpVariable, info.var_id, Ops);
+    auto *Inst = new SPIRVInstruction(spv::OpVariable, info->var_id, Ops);
     SPIRVInstList.push_back(Inst);
 
     // Map calls to the variable-builtin-function.
-    for (auto &U : info.var_fn->uses()) {
+    for (auto &U : info->var_fn->uses()) {
       if (auto *call = dyn_cast<CallInst>(U.getUser())) {
         const auto set = unsigned(
             dyn_cast<ConstantInt>(call->getOperand(0))->getZExtValue());
         const auto binding = unsigned(
             dyn_cast<ConstantInt>(call->getOperand(1))->getZExtValue());
-        if (set == info.descriptor_set && binding == info.binding) {
-          switch (info.arg_kind) {
+        if (set == info->descriptor_set && binding == info->binding) {
+          switch (info->arg_kind) {
           case clspv::ArgKind::Buffer:
           case clspv::ArgKind::Pod:
             // The call maps to the variable directly.
-            VMap[call] = info.var_id;
+            VMap[call] = info->var_id;
             break;
           case clspv::ArgKind::Sampler:
           case clspv::ArgKind::ReadOnlyImage:
           case clspv::ArgKind::WriteOnlyImage:
             // The call maps to a load we generate later.
-            ResourceVarDeferredLoadCalls[call] = info.var_id;
+            ResourceVarDeferredLoadCalls[call] = info->var_id;
             break;
           default:
             llvm_unreachable("Unhandled arg kind");
@@ -2711,42 +2714,41 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
                             Inst->getOpcode() != spv::OpExtInstImport;
                    });
 
-  for (auto *info_ptr : ModuleOrderedResourceVars) {
-    auto &info = *info_ptr;
-    SPIRVOperandList Ops;
+  SPIRVOperandList Ops;
+  for (auto *info : rvs) {
     // Decorate with DescriptorSet and Binding.
     Ops.clear();
-    Ops << MkId(info.var_id) << MkNum(spv::DecorationDescriptorSet)
-        << MkNum(info.descriptor_set);
+    Ops << MkId(info->var_id) << MkNum(spv::DecorationDescriptorSet)
+        << MkNum(info->descriptor_set);
     SPIRVInstList.insert(DecoInsertPoint,
                          new SPIRVInstruction(spv::OpDecorate, Ops));
 
     Ops.clear();
-    Ops << MkId(info.var_id) << MkNum(spv::DecorationBinding)
-        << MkNum(info.binding);
+    Ops << MkId(info->var_id) << MkNum(spv::DecorationBinding)
+        << MkNum(info->binding);
     SPIRVInstList.insert(DecoInsertPoint,
                          new SPIRVInstruction(spv::OpDecorate, Ops));
 
     // Generate NonWritable and NonReadable
-    switch (info.arg_kind) {
+    switch (info->arg_kind) {
     case clspv::ArgKind::Buffer:
-      if (info.var_fn->getReturnType()->getPointerAddressSpace() ==
+      if (info->var_fn->getReturnType()->getPointerAddressSpace() ==
           clspv::AddressSpace::Constant) {
         Ops.clear();
-        Ops << MkId(info.var_id) << MkNum(spv::DecorationNonWritable);
+        Ops << MkId(info->var_id) << MkNum(spv::DecorationNonWritable);
         SPIRVInstList.insert(DecoInsertPoint,
                              new SPIRVInstruction(spv::OpDecorate, Ops));
       }
       break;
     case clspv::ArgKind::ReadOnlyImage:
       Ops.clear();
-      Ops << MkId(info.var_id) << MkNum(spv::DecorationNonWritable);
+      Ops << MkId(info->var_id) << MkNum(spv::DecorationNonWritable);
       SPIRVInstList.insert(DecoInsertPoint,
                            new SPIRVInstruction(spv::OpDecorate, Ops));
       break;
     case clspv::ArgKind::WriteOnlyImage:
       Ops.clear();
-      Ops << MkId(info.var_id) << MkNum(spv::DecorationNonReadable);
+      Ops << MkId(info->var_id) << MkNum(spv::DecorationNonReadable);
       SPIRVInstList.insert(DecoInsertPoint,
                            new SPIRVInstruction(spv::OpDecorate, Ops));
       break;

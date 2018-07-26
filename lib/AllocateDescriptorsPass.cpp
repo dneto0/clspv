@@ -523,7 +523,7 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
 
           // Create the type only once.
           auto *arr_type = ArrayType::get(argTy->getPointerElementType(), 0);
-          resource_type = StructType::get({arr_type});
+          resource_type = StructType::get(arr_type);
           // Preserve the address space in case the pointer is passed into a
           // helper function: we don't want to change the type of the helper
           // function parameter.
@@ -538,7 +538,7 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
           //   { Elem }
           //
           // Use unnamed struct types so we generate less SPIR-V code.
-          resource_type = StructType::get({argTy});
+          resource_type = StructType::get(argTy);
           addr_space = clspv::AddressSpace::Global;
           break;
         }

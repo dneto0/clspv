@@ -375,8 +375,6 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
       for (Argument &Arg : f_ptr->args()) {
         set_and_binding_list.emplace_back(kUnallocated, kUnallocated);
         if (discriminants_list[arg_index].index >= 0) {
-          outs() << f_ptr->getName() << " " << Arg.getName() << " set " << set
-                 << " binding " << binding << "\n";
           set_and_binding_list.back().first = set;
           set_and_binding_list.back().second = binding++;
         }
@@ -463,15 +461,11 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
 
     int arg_index = 0;
     for (Argument &Arg : f_ptr->args()) {
-      outs() << f_ptr->getName() << " " << Arg.getName() << " arg_index "
-             << arg_index << "\n";
       if (discriminants[arg_index].index >= 0) {
         // This argument needs to be rewritten.
 
         const auto set = set_and_binding_list[arg_index].first;
         const auto binding = set_and_binding_list[arg_index].second;
-        outs() << f_ptr->getName() << " " << Arg.getName() << " arg_index "
-               << arg_index << " set " << set << " binding " << binding << "\n";
 #if 0
         // TODO(dneto) Should we ignore unused arguments?  It's probably not an
         // issue in practice.  Adding this condition would change a bunch of our

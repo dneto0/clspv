@@ -292,7 +292,8 @@ struct SPIRVProducerPass final : public ModulePass {
   // be converted to a storage buffer, replace each such global variable with
   // one in the storage class expecgted by SPIR-V.
   void FindGlobalConstVars(Module &M, const DataLayout &DL);
-  // Populate SetAndBindingToInfoMap
+  // Populate ResourceVarInfoList, FunctionToResourceVarsMap, and
+  // ModuleOrderedResourceVars.
   void FindResourceVars(Module &M, const DataLayout &DL);
   bool FindExtInst(Module &M);
   void FindTypePerGlobalVar(GlobalVariable &GV);
@@ -456,13 +457,16 @@ private:
   // emitted?
   DenseSet<Value*> GVarWithEmittedBindingInfo;
 
+
+  // Bookkeeping for mapping kernel arguments to resource variables.
   using SetAndBinding = std::pair<unsigned, unsigned>;
   struct ResourceVarInfo {
-    ResourceVarInfo(unsigned set_arg, unsigned binding_arg, Function *fn,
-                    clspv::ArgKind arg_kind_arg)
-        : descriptor_set(set_arg), binding(binding_arg), var_fn(fn),
-          arg_kind(arg_kind_arg),
+    ResourceVarInfo(int index_arg, unsigned set_arg, unsigned binding_arg,
+                    Function *fn, clspv::ArgKind arg_kind_arg)
+        : index(index_arg), descriptor_set(set_arg), binding(binding_arg),
+          var_fn(fn), arg_kind(arg_kind_arg),
           addr_space(fn->getReturnType()->getPointerAddressSpace()) {}
+    const int index; // Index into ResourceVarInfoList
     const unsigned descriptor_set;
     const unsigned binding;
     Function *const var_fn; // The @clspv.resource.var.* function.
@@ -471,11 +475,19 @@ private:
     // The SPIR-V ID of the OpVariable.  Not populated at construction time.
     uint32_t var_id = 0;
   };
-  // An ordered list of resource var info.
+  // A list of resource var info.  Resource var indices are indices
+  // into this vector.
   SmallVector<ResourceVarInfo, 8> ResourceVarInfoList;
-  // Maps a set and binding to the index in ResourceVarInfoList.
-  using SetAndBindingToIndexType = DenseMap<SetAndBinding, size_t>;
-  SetAndBindingToIndexType SetAndBindingToIndexMap;
+  // This is a vector of pointers of all the resource vars, but ordered by
+  // kernel function, and then by argument.
+  UniqueVector<ResourceVarInfo*> ModuleOrderedResourceVars;
+  // Map a function to the ordered list of resource variables it uses, one for
+  // each argument.  If an argument does not use a resource variable, it
+  // will have a null pointer entry.
+  using FunctionToResourceVarsMapType =
+      DenseMap<Function *, SmallVector<ResourceVarInfo *, 8>>;
+  FunctionToResourceVarsMapType FunctionToResourceVarsMap;
+
   // What LLVM types map to SPIR-V types needing layout?  These are the
   // arrays and structures supporting storage buffers and uniform buffers.
   TypeList TypesNeedingLayout;
@@ -1173,26 +1185,55 @@ void SPIRVProducerPass::FindResourceVars(Module &M, const DataLayout &DL) {
   SPIRVInstructionList &SPIRVInstList = getSPIRVInstList();
   ValueMapType &VMap = getValueMap();
 
-  SetAndBindingToIndexMap.clear();
   ResourceVarInfoList.clear();
+  FunctionToResourceVarsMap.clear();
+  ModuleOrderedResourceVars.reset();
+  DenseMap<SetAndBinding, int> set_and_binding_to_index;
   for (Function &F : M) {
     if (F.getName().startswith("clspv.resource.var.")) {
       // Find all calls to this function with distinct set and binding pairs.
-      // Save them in ResourceVarInfoList and SetAndBindingToIndexMap.
+      // Save them in ResourceVarInfoList.
       for (auto &U : F.uses()) {
         if (auto *call = dyn_cast<CallInst>(U.getUser())) {
-          const auto set = unsigned(
+         const auto set = unsigned(
               dyn_cast<ConstantInt>(call->getArgOperand(0))->getZExtValue());
           const auto binding = unsigned(
               dyn_cast<ConstantInt>(call->getArgOperand(1))->getZExtValue());
+          const auto arg_index = unsigned(
+              dyn_cast<ConstantInt>(call->getArgOperand(3))->getZExtValue());
           const SetAndBinding key{set, binding};
-          auto where = SetAndBindingToIndexMap.find(key);
-          if (where == SetAndBindingToIndexMap.end()) {
-            SetAndBindingToIndexMap[key] = ResourceVarInfoList.size();
+          auto where = set_and_binding_to_index.find(key);
+          ResourceVarInfo *rv = nullptr;
+          if (where == set_and_binding_to_index.end()) {
+            int rv_index = int(ResourceVarInfoList.size());
+            set_and_binding_to_index[key] = rv_index;
             const auto arg_kind = clspv::ArgKind(
                 dyn_cast<ConstantInt>(call->getArgOperand(2))->getZExtValue());
-            ResourceVarInfoList.emplace_back(set, binding, &F, arg_kind);
+            ResourceVarInfoList.emplace_back(rv_index, set, binding, &F,
+                                             arg_kind);
+            rv = &ResourceVarInfoList.back();
+          } else {
+            rv = &ResourceVarInfoList[where->second];
           }
+          // Now populate FunctionToResourceVarsMap.
+          auto &mapping =
+              FunctionToResourceVarsMap[call->getParent()->getParent()];
+          while (mapping.size() <= arg_index) {
+            mapping.push_back(nullptr);
+          }
+          mapping[arg_index] = rv;
+        }
+      }
+    }
+  }
+
+  // Populate ModuleOrderedResourceVars.
+  for (Function &F : M) {
+    auto where = FunctionToResourceVarsMap.find(&F);
+    if (where != FunctionToResourceVarsMap.end()) {
+      for (ResourceVarInfo *rv : where->second) {
+        if (rv != nullptr) {
+          ModuleOrderedResourceVars.insert(rv);
         }
       }
     }
@@ -1402,9 +1443,9 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
 
   // To match older clspv codegen, generate the float type first if required
   // for images.
-  for (auto &info : ResourceVarInfoList) {
-    if (info.arg_kind == clspv::ArgKind::ReadOnlyImage ||
-        info.arg_kind == clspv::ArgKind::WriteOnlyImage) {
+  for (auto *info : ModuleOrderedResourceVars) {
+    if (info->arg_kind == clspv::ArgKind::ReadOnlyImage ||
+        info->arg_kind == clspv::ArgKind::WriteOnlyImage) {
       // We need "float" for the sampled component type.
       FindType(Type::getFloatTy(M.getContext()));
       // We only need to find it once.
@@ -1412,10 +1453,10 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
     }
   }
 
-  for (auto& info : ResourceVarInfoList) {
-    Type* type = info.var_fn->getReturnType();
+  for (const auto *info : ModuleOrderedResourceVars) {
+    Type *type = info->var_fn->getReturnType();
 
-    switch (info.arg_kind) {
+    switch (info->arg_kind) {
     case clspv::ArgKind::Buffer:
       if (auto *sty = dyn_cast<StructType>(type->getPointerElementType())) {
         StructTypesNeedingBlock.insert(sty);
@@ -1458,21 +1499,21 @@ void SPIRVProducerPass::FindTypesForResourceVars(Module &M) {
     Type *type = work_list.back();
     work_list.pop_back();
     TypesNeedingLayout.insert(type);
-    switch(type->getTypeID()) {
-      case Type::ArrayTyID:
-        work_list.push_back(type->getArrayElementType());
-        if (!Hack_generate_runtime_array_stride_early) {
-          // Remember this array type for deferred decoration.
-          TypesNeedingArrayStride.insert(type);
-        }
-        break;
-      case Type::StructTyID:
-        for (auto *elem_ty : cast<StructType>(type)->elements()) {
-          work_list.push_back(elem_ty);
-        }
-      default:
-        // This type and its contained types don't get layout.
-        break;
+    switch (type->getTypeID()) {
+    case Type::ArrayTyID:
+      work_list.push_back(type->getArrayElementType());
+      if (!Hack_generate_runtime_array_stride_early) {
+        // Remember this array type for deferred decoration.
+        TypesNeedingArrayStride.insert(type);
+      }
+      break;
+    case Type::StructTyID:
+      for (auto *elem_ty : cast<StructType>(type)->elements()) {
+        work_list.push_back(elem_ty);
+      }
+    default:
+      // This type and its contained types don't get layout.
+      break;
     }
   }
 }
@@ -2606,7 +2647,8 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
   ValueMapType &VMap = getValueMap();
 
   // Generate variables.
-  for (auto &info : ResourceVarInfoList) {
+  for (auto *info_ptr : ModuleOrderedResourceVars) {
+    auto &info = *info_ptr;
     Type *type = info.var_fn->getReturnType();
     // Remap the address space for opaque types.
     switch (info.arg_kind) {
@@ -2633,20 +2675,26 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
     // Map calls to the variable-builtin-function.
     for (auto &U : info.var_fn->uses()) {
       if (auto *call = dyn_cast<CallInst>(U.getUser())) {
-        switch (info.arg_kind) {
-        case clspv::ArgKind::Buffer:
-        case clspv::ArgKind::Pod:
-          // The call maps to the variable directly.
-          VMap[call] = info.var_id;
-          break;
-        case clspv::ArgKind::Sampler:
-        case clspv::ArgKind::ReadOnlyImage:
-        case clspv::ArgKind::WriteOnlyImage:
-          // The call maps to a load we generate later.
-          ResourceVarDeferredLoadCalls[call] = info.var_id;
-          break;
-        default:
-          llvm_unreachable("Unhandled arg kind");
+        const auto set = unsigned(
+            dyn_cast<ConstantInt>(call->getOperand(0))->getZExtValue());
+        const auto binding = unsigned(
+            dyn_cast<ConstantInt>(call->getOperand(1))->getZExtValue());
+        if (set == info.descriptor_set && binding == info.binding) {
+          switch (info.arg_kind) {
+          case clspv::ArgKind::Buffer:
+          case clspv::ArgKind::Pod:
+            // The call maps to the variable directly.
+            VMap[call] = info.var_id;
+            break;
+          case clspv::ArgKind::Sampler:
+          case clspv::ArgKind::ReadOnlyImage:
+          case clspv::ArgKind::WriteOnlyImage:
+            // The call maps to a load we generate later.
+            ResourceVarDeferredLoadCalls[call] = info.var_id;
+            break;
+          default:
+            llvm_unreachable("Unhandled arg kind");
+          }
         }
       }
     }
@@ -2663,7 +2711,8 @@ void SPIRVProducerPass::GenerateResourceVars(Module &M) {
                             Inst->getOpcode() != spv::OpExtInstImport;
                    });
 
-  for (auto &info : ResourceVarInfoList) {
+  for (auto *info_ptr : ModuleOrderedResourceVars) {
+    auto &info = *info_ptr;
     SPIRVOperandList Ops;
     // Decorate with DescriptorSet and Binding.
     Ops.clear();
@@ -2986,6 +3035,8 @@ void SPIRVProducerPass::GenerateDescriptorMapInfo(const DataLayout &DL,
                                                   Function &F) {
   // Gather the list of resources that are used by this function's arguments.
   DenseSet<unsigned> arg_index_set;
+  // TODO(dneto): resource_var_at_index should have same contents as
+  // FunctionToResourceVars[&F].  So remove this redundant calculation.
   DenseMap<unsigned, ResourceVarInfo *> resource_var_at_index;
   // We'll scan uses of the var_fn for each resource var info struct.  This
   // will overcount in the case where the same resource is shared across
@@ -2993,8 +3044,8 @@ void SPIRVProducerPass::GenerateDescriptorMapInfo(const DataLayout &DL,
   // is in the target function F, and also to ensure the set and binding
   // for the resource-var-info struct match the set and binding as specified
   // in the call.
-  for (auto &info : ResourceVarInfoList) {
-    for (auto &U : info.var_fn->uses()) {
+  for (auto *info : ModuleOrderedResourceVars) {
+    for (auto &U : info->var_fn->uses()) {
       if (auto *call = dyn_cast<CallInst>(U.getUser())) {
         if (&F == call->getParent()->getParent()) {
           auto set = unsigned(
@@ -3003,9 +3054,9 @@ void SPIRVProducerPass::GenerateDescriptorMapInfo(const DataLayout &DL,
               dyn_cast<ConstantInt>(call->getOperand(1))->getZExtValue());
           auto arg_index = unsigned(
               dyn_cast<ConstantInt>(call->getOperand(3))->getZExtValue());
-          if (set == info.descriptor_set && binding == info.binding) {
+          if (set == info->descriptor_set && binding == info->binding) {
             arg_index_set.insert(arg_index);
-            resource_var_at_index[arg_index] = &info;
+            resource_var_at_index[arg_index] = info;
           }
         }
       }

@@ -416,7 +416,7 @@ bool AllocateDescriptorsPass::AllocateKernelArgDescriptors(Module &M) {
   DenseMap<int, unsigned> all_kernels_binding_for_arg_index;
 
   // Maps a function to the list of set and binding to use, per argument.
-  // For an argument that does no use a descriptor, its set and binding are
+  // For an argument that does not use a descriptor, its set and binding are
   // both the kUnallocated value.
   DenseMap<Function *, SmallVector<std::pair<unsigned, unsigned>, 3>>
       set_and_binding_pairs_for_function;

@@ -54,6 +54,16 @@ private:
   // or function or pointers, so this is always well defined.  The ordering
   // should be reproducible from one run to the next.
   UniqueVector<Function *> LevelOrderedFunctions(Module &);
+
+  // For each kernel argument that will map to a resource variable (descriptor),
+  // try to rewrite the uses of the argument as a direct access of the resource.
+  // We can only do this if all the callees of the function use the same
+  // resource access value for that argument.  Returns true if the module
+  // changed.
+  bool RewriteResourceAccesses(Function *fn);
+  // Rewrite uses of this resrouce-based arg if all the callers pass in the
+  // same resource access.  Returns true if the module changed.
+  bool RewriteAccessesForArg(Function *F, int arg_index, Argument &arg);
 };
 } // namespace
 
@@ -71,7 +81,10 @@ namespace {
 bool DirectResourceAccessPass::runOnModule(Module &M) {
   bool Changed = false;
 
-  auto functions = LevelOrderedFunctions(M);
+  auto ordered_functions = LevelOrderedFunctions(M);
+  for (auto *fn : ordered_functions) {
+    Changed |= RewriteResourceAccesses(fn);
+  }
 
   return Changed;
 }
@@ -80,9 +93,6 @@ UniqueVector<Function *>
 DirectResourceAccessPass::LevelOrderedFunctions(Module &M) {
   // Use a breadth-first search.
   const uint32_t kMaxDepth = UINT32_MAX;
-  // Map a function to its depth.  This will be updated as we traverse
-  // the call graph.
-  DenseMap<Function*, uint32_t> depth;
 
   // Make an ordered list of all functions having bodies, with kernel entry
   // point listed first.
@@ -95,7 +105,6 @@ DirectResourceAccessPass::LevelOrderedFunctions(Module &M) {
     if (F.getCallingConv() == CallingConv::SPIR_KERNEL) {
       functions.insert(&F);
       entry_points.push_back(&F);
-      depth[&F] = 1;
     }
   }
   for (Function &F : M) {
@@ -104,8 +113,6 @@ DirectResourceAccessPass::LevelOrderedFunctions(Module &M) {
     }
     if (F.getCallingConv() == CallingConv::SPIR_FUNC) {
       functions.insert(&F);
-      // The depth will be updated later if the function is reachable.
-      depth[&F] = kMaxDepth;
     }
   }
 
@@ -145,7 +152,7 @@ DirectResourceAccessPass::LevelOrderedFunctions(Module &M) {
   }
   if (ShowDRA) {
     outs() << "DRA: Ordered functions:\n";
-    int i =0;
+    int i = 0;
     for (Function *fn : result) {
       outs() << "DRA:  [" << i << "] " << fn->getName() << "\n";
       i++;
@@ -153,4 +160,114 @@ DirectResourceAccessPass::LevelOrderedFunctions(Module &M) {
   }
   return result;
 }
+
+bool DirectResourceAccessPass::RewriteResourceAccesses(Function *fn) {
+  bool Changed = false;
+  int arg_index = 0;
+  for (Argument &arg : fn->args()) {
+    switch (clspv::GetArgKindForType(arg.getType())) {
+    case clspv::ArgKind::Buffer:
+    case clspv::ArgKind::ReadOnlyImage:
+    case clspv::ArgKind::WriteOnlyImage:
+    case clspv::ArgKind::Sampler:
+      Changed |= RewriteAccessesForArg(fn, arg_index, arg);
+      break;
+    }
+    arg_index++;
+  }
+  return Changed;
+}
+
+bool DirectResourceAccessPass::RewriteAccessesForArg(Function *fn,
+                                                     int arg_index,
+                                                     Argument &arg) {
+  bool Changed = false;
+
+  // We can convert a parameter to a direct resource access if it is
+  // either a direct call to a clspv.resource.var.* or if it a GEP of
+  // such a thing (where the GEP can only have zero indices).
+  struct ParamInfo {
+    // The resource-access builtin function.  (@clspv.resource.var.*)
+    Function *var_fn;
+    // The descriptor set.
+    uint32_t set;
+    // The binding.
+    uint32_t binding;
+    // If the parameter is a GEP, then this is the number of zero-indices
+    // the GEP used.
+    unsigned num_gep_zeroes;
+  };
+  // The common valid parameter info across all the callers seen soo far.
+
+  bool seen_one = false;
+  ParamInfo common;
+  // Tries to merge the given parameter info into |common|.  If it is the first
+  // time we've tried, then save it.  Returns true if there is no conflict.
+  auto merge_param_info = [&seen_one, &common](const ParamInfo &pi) {
+    if (!seen_one) {
+      common = pi;
+      seen_one = true;
+      return true;
+    }
+    return pi.var_fn == common.var_fn && pi.set == common.set &&
+           pi.binding == common.binding &&
+           pi.num_gep_zeroes == common.num_gep_zeroes;
+  };
+
+  for (auto &use : fn->uses()) {
+    if (auto *caller = dyn_cast<CallInst>(use.getUser())) {
+      Value *value = caller->getArgOperand(arg_index);
+      // We care about two cases:
+      //     - a direct call to clspv.resource.var.*
+      //     - a GEP with only zero indices, where the base pointer is
+
+      // Unpack GEPs with zeros, if we can.  Rewrite |value| as we go along.
+      unsigned num_gep_zeroes = 0;
+      for (auto *gep = dyn_cast<GetElementPtrInst>(value); gep;
+           gep = dyn_cast<GetElementPtrInst>(value)) {
+        if (!gep->hasAllZeroIndices()) {
+          return false;
+        }
+        num_gep_zeroes += gep->getNumIndices();
+        value = gep->getPointerOperand();
+      }
+      if (auto *call = dyn_cast<CallInst>(value)) {
+        // If the call is a call to a @clspv.resource.var.* function, then try
+        // to merge it, assuming the given number of GEP zero-indices so far.
+        if (call->getCalledFunction()->getName().startswith(
+                "clspv.resource.var.")) {
+          const auto set = uint32_t(
+              dyn_cast<ConstantInt>(call->getOperand(0))->getZExtValue());
+          const auto binding = uint32_t(
+              dyn_cast<ConstantInt>(call->getOperand(1))->getZExtValue());
+          if (!merge_param_info(
+                  {call->getCalledFunction(), set, binding, num_gep_zeroes})) {
+            return false;
+          }
+        } else {
+          // A call but not to a resource access builtin function.
+          return false;
+        }
+      } else {
+        // Not a call.
+        return false;
+      }
+    } else {
+      // There isn't enough commonality.  Bail out without changing anything.
+      return false;
+    }
+  }
+  if (ShowDRA) {
+    if (seen_one) {
+      outs() << "DRA:  Rewrite " << fn->getName() << " arg " << arg_index << " "
+             << arg.getName() << ": " << common.var_fn->getName() << " ("
+             << common.set << "," << common.binding
+             << ") zeroes: " << common.num_gep_zeroes << "\n";
+    }
+  }
+  // TODO(dneto): Now rewrite the argument.
+
+  return Changed;
+}
+
 } // namespace

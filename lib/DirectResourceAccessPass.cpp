@@ -86,9 +86,11 @@ namespace {
 bool DirectResourceAccessPass::runOnModule(Module &M) {
   bool Changed = false;
 
-  auto ordered_functions = CallGraphOrderedFunctions(M);
-  for (auto *fn : ordered_functions) {
-    Changed |= RewriteResourceAccesses(fn);
+  if (clspv::Option::DirectResourceAccess()) {
+    auto ordered_functions = CallGraphOrderedFunctions(M);
+    for (auto *fn : ordered_functions) {
+      Changed |= RewriteResourceAccesses(fn);
+    }
   }
 
   return Changed;

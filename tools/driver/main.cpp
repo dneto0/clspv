@@ -285,14 +285,6 @@ int main(const int argc, const char *const argv[]) {
 
   llvm::cl::ParseCommandLineOptions(argc, argv);
 
-  if (clspv::Option::DistinctKernelDescriptorSets() &&
-      clspv::Option::DirectResourceAccess()) {
-    llvm::errs()
-        << "error: Options -distinct-kernel-descriptor-sets and "
-           "-direct-resource-access may not be used at the same time.\n";
-    return 1;
-  }
-
   switch (OptimizationLevel) {
   case '0':
   case '1':

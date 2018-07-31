@@ -13,17 +13,19 @@
 // limitations under the License.
 
 #include <climits>
-#include <utility>
-#include <set>
 #include <map>
+#include <set>
+#include <utility>
 #include <vector>
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/UniqueVector.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/raw_ostream.h"
@@ -200,6 +202,9 @@ bool DirectResourceAccessPass::RewriteAccessesForArg(Function *fn,
                                                      int arg_index,
                                                      Argument &arg) {
   bool Changed = false;
+  if (fn->use_empty()) {
+    return false;
+  }
 
   // We can convert a parameter to a direct resource access if it is
   // either a direct call to a clspv.resource.var.* or if it a GEP of
@@ -214,6 +219,8 @@ bool DirectResourceAccessPass::RewriteAccessesForArg(Function *fn,
     // If the parameter is a GEP, then this is the number of zero-indices
     // the GEP used.
     unsigned num_gep_zeroes;
+    // An example call fitting
+    CallInst *sample_call;
   };
   // The common valid parameter info across all the callers seen soo far.
 
@@ -258,8 +265,8 @@ bool DirectResourceAccessPass::RewriteAccessesForArg(Function *fn,
               dyn_cast<ConstantInt>(call->getOperand(0))->getZExtValue());
           const auto binding = uint32_t(
               dyn_cast<ConstantInt>(call->getOperand(1))->getZExtValue());
-          if (!merge_param_info(
-                  {call->getCalledFunction(), set, binding, num_gep_zeroes})) {
+          if (!merge_param_info({call->getCalledFunction(), set, binding,
+                                 num_gep_zeroes, call})) {
             return false;
           }
         } else {
@@ -283,7 +290,32 @@ bool DirectResourceAccessPass::RewriteAccessesForArg(Function *fn,
              << ") zeroes: " << common.num_gep_zeroes << "\n";
     }
   }
-  // TODO(dneto): Now rewrite the argument.
+
+  // Now rewrite the argument, using the info in |common|.
+
+  Changed = true;
+  IRBuilder<> Builder(fn->getParent()->getContext());
+  auto *zero = Builder.getInt32(0);
+  Builder.SetInsertPoint(fn->getEntryBlock().getFirstNonPHI());
+
+  // Create the call.
+  SmallVector<Value *, 8> args(common.sample_call->arg_begin(),
+                               common.sample_call->arg_end());
+  Value *replacement = Builder.CreateCall(common.var_fn, args);
+  if (ShowDRA) {
+    outs() << "DRA:    Replace: call " << *replacement << "\n";
+  }
+  if (common.num_gep_zeroes) {
+    SmallVector<Value *, 3> zeroes;
+    for (unsigned i = 0; i < common.num_gep_zeroes; i++) {
+      zeroes.push_back(zero);
+    }
+    replacement = Builder.CreateGEP(replacement, zeroes);
+    if (ShowDRA) {
+      outs() << "DRA:    Replace: gep  " << *replacement << "\n";
+    }
+  }
+  arg.replaceAllUsesWith(replacement);
 
   return Changed;
 }

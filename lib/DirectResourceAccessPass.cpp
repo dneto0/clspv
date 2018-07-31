@@ -13,6 +13,9 @@
 // limitations under the License.
 
 #include <climits>
+#include <utility>
+#include <set>
+#include <map>
 #include <vector>
 
 #include "llvm/ADT/DenseMap.h"
@@ -48,12 +51,11 @@ public:
   bool runOnModule(Module &M) override;
 
 private:
-  // Return the functions reachable from entry point functions, in level-ized
-  // order.  The level of a function F is the length of the longest path in the
-  // call graph from an entry point to F.  OpenCL C does not permit recursion
+  // Return the functions reachable from entry point functions, where
+  // callers appear before callees.  OpenCL C does not permit recursion
   // or function or pointers, so this is always well defined.  The ordering
   // should be reproducible from one run to the next.
-  UniqueVector<Function *> LevelOrderedFunctions(Module &);
+  UniqueVector<Function *> CallGraphOrderedFunctions(Module &);
 
   // For each kernel argument that will map to a resource variable (descriptor),
   // try to rewrite the uses of the argument as a direct access of the resource.
@@ -61,9 +63,10 @@ private:
   // resource access value for that argument.  Returns true if the module
   // changed.
   bool RewriteResourceAccesses(Function *fn);
+
   // Rewrite uses of this resrouce-based arg if all the callers pass in the
   // same resource access.  Returns true if the module changed.
-  bool RewriteAccessesForArg(Function *F, int arg_index, Argument &arg);
+  bool RewriteAccessesForArg(Function *fn, int arg_index, Argument &arg);
 };
 } // namespace
 
@@ -81,7 +84,7 @@ namespace {
 bool DirectResourceAccessPass::runOnModule(Module &M) {
   bool Changed = false;
 
-  auto ordered_functions = LevelOrderedFunctions(M);
+  auto ordered_functions = CallGraphOrderedFunctions(M);
   for (auto *fn : ordered_functions) {
     Changed |= RewriteResourceAccesses(fn);
   }
@@ -90,12 +93,11 @@ bool DirectResourceAccessPass::runOnModule(Module &M) {
 }
 
 UniqueVector<Function *>
-DirectResourceAccessPass::LevelOrderedFunctions(Module &M) {
-  // Use a breadth-first search.
-  const uint32_t kMaxDepth = UINT32_MAX;
+DirectResourceAccessPass::CallGraphOrderedFunctions(Module &M) {
+  // Use a topological sort.
 
   // Make an ordered list of all functions having bodies, with kernel entry
-  // point listed first.
+  // points listed first.
   UniqueVector<Function *> functions;
   SmallVector<Function *, 10> entry_points;
   for (Function &F : M) {
@@ -107,22 +109,32 @@ DirectResourceAccessPass::LevelOrderedFunctions(Module &M) {
       entry_points.push_back(&F);
     }
   }
+  // Add the remaining functions.
   for (Function &F : M) {
     if (F.isDeclaration()) {
       continue;
     }
-    if (F.getCallingConv() == CallingConv::SPIR_FUNC) {
+    if (F.getCallingConv() != CallingConv::SPIR_KERNEL) {
       functions.insert(&F);
     }
   }
 
-  // Map each function to the functions it calls.
+  // This will be a complete set of reveresed edges, i.e. with all pairs
+  // of (callee, caller).
+  using Edge = std::pair<unsigned, unsigned>;
+  auto make_edge = [&functions](Function *callee, Function *caller) {
+    return std::pair<unsigned, unsigned>{functions.idFor(callee),
+                                         functions.idFor(caller)};
+  };
+  std::set<Edge> reverse_edges;
+  // Map each function to the functions it calls, and populate |reverse_edges|.
   std::map<Function *, SmallVector<Function *, 3>> calls_functions;
   for (Function *callee : functions) {
     for (auto &use : callee->uses()) {
       if (auto *call = dyn_cast<CallInst>(use.getUser())) {
         Function *caller = call->getParent()->getParent();
         calls_functions[caller].push_back(callee);
+        reverse_edges.insert(make_edge(callee, caller));
       }
     }
   }
@@ -136,26 +148,32 @@ DirectResourceAccessPass::LevelOrderedFunctions(Module &M) {
               });
   }
 
+  // Use Kahn's algorithm for topoological sort.
   UniqueVector<Function *> result;
   SmallVector<Function *, 10> work_list(entry_points.begin(),
                                         entry_points.end());
-  // Use a read cursor to scan from left to right.
-  for (size_t r = 0; r < work_list.size(); r++) {
-    Function *fn = work_list[r];
-    // Even though recursion is not allowed, be defensive here and guard
-    // against an infinite loop in case the user gave us a bad program.
-    if (result.idFor(fn) == 0) {
-      result.insert(fn);
-      auto &callees = calls_functions[fn];
-      work_list.insert(work_list.end(), callees.begin(), callees.end());
+  while (!work_list.empty()) {
+    Function *caller = work_list.back();
+    work_list.pop_back();
+    result.insert(caller);
+    auto &callees = calls_functions[caller];
+    for (auto *callee : callees) {
+      reverse_edges.erase(make_edge(callee, caller));
+      auto lower_bound = reverse_edges.lower_bound(make_edge(callee, nullptr));
+      if (lower_bound == reverse_edges.end() ||
+          lower_bound->first != functions.idFor(callee)) {
+        // Callee has no other unvisited callers.
+        work_list.push_back(callee);
+      }
     }
   }
+  // If reverse_edges is not empty then there was a cycle.  But we don't care
+  // about that erroneous case.
+
   if (ShowDRA) {
     outs() << "DRA: Ordered functions:\n";
-    int i = 0;
-    for (Function *fn : result) {
-      outs() << "DRA:  [" << i << "] " << fn->getName() << "\n";
-      i++;
+    for (Function *fun : result) {
+      outs() << "DRA:   " << fun->getName() << "\n";
     }
   }
   return result;
